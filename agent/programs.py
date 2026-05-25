@@ -3,18 +3,29 @@ agent/programs.py
 =================
 PROGRAM_SPRINT — deterministic FSM pipeline for sprint execution.
 
-Flow (one file per LLM call to avoid token limit):
-  read_store → patch_store → write_store
-  → read_handlers → patch_handlers → write_handlers
-  → read_tools → patch_tools → write_tools
-  → generate_test → write_test
-  → run_mypy_all → mypy_guard
-  → run_pytest → pytest_guard
-  → notify_done
+Flow (Search&Replace delta per LLM call — avoids token limit):
+  read_store → patch_store(llm, S&R) → apply_store
+  → read_handlers → patch_handlers(llm, S&R) → apply_handlers
+  → read_tools → patch_tools(llm, S&R) → apply_tools
+  → generate_test(llm, full file) → write_test
+  → run_mypy → mypy_guard
+  → run_tests → pytest_guard
+  → notify_done | reject_mypy | reject_pytest
 
-Each LLM step receives ONE file → returns ONE file as JSON {"path": "content"}.
-This keeps each response under ~5k chars, well within token limits.
-Test is generated last so it can reference all patched source files.
+LLM steps for source files return S&R delta blocks, not full files.
+This keeps each response well under provider token limits for files of any size.
+
+Test is generated last (full file, small) so it can reference all patched sources.
+
+S&R block format:
+  <<<SEARCH
+  <exact block to find — must match exactly once>
+  =======
+  <replacement>
+  >>>REPLACE
+
+apply_search_replace_patch validates uniqueness and raises ValueError on mismatch
+→ FSM on_error=retry will re-ask the LLM for a corrected patch.
 """
 
 from __future__ import annotations
@@ -40,26 +51,38 @@ PROGRAM_SPRINT: dict = {
                 "## Sprint specification\n$sprint_spec\n\n"
                 "## Current file: nano_vm_mcp/store.py\n$read_store.output\n\n"
                 "## Task\n"
-                "Implement ONLY the store.py changes from the specification above.\n"
+                "Produce a Search&Replace patch for ONLY the store.py changes "
+                "described in the specification above.\n\n"
                 "Rules:\n"
-                "- Follow existing code style exactly.\n"
-                "- Use 'from __future__ import annotations' (double underscores).\n"
-                "- mypy --strict must pass (0 errors).\n"
-                "- Return the COMPLETE file content (not a diff).\n\n"
+                "- Each SEARCH block must match exactly once in the file shown above.\n"
+                "- Preserve indentation and code style exactly.\n"
+                "- mypy --strict must pass after the patch (0 errors).\n"
+                "- Output ONLY patch blocks — no explanation, no markdown prose.\n\n"
                 "## Output format — CRITICAL\n"
-                "Return ONLY a valid JSON object with ONE key:\n"
-                "{\"nano_vm_mcp/store.py\": \"...complete file content...\"}\n"
-                "No markdown fences. No explanation. Pure JSON only."
+                "Return one or more blocks in this exact format:\n\n"
+                "<<<SEARCH\n"
+                "<exact lines from current file>\n"
+                "=======\n"
+                "<replacement lines>\n"
+                ">>>REPLACE\n\n"
+                "Multiple blocks are allowed. No other text."
             ),
             "output_key": "store_patch",
-            "timeout_seconds": 300,
+            "on_error": "retry",
+            "max_retries": 2,
+            "timeout_seconds": 120,
             "on_timeout": "fail",
         },
         {
-            "id": "write_store",
+            "id": "apply_store",
             "type": "tool",
-            "tool": "write_repo_files",
-            "args": {"files_json": "$store_patch"},
+            "tool": "apply_search_replace_patch",
+            "args": {
+                "file_path": "$store_file",
+                "patch_text": "$store_patch",
+            },
+            "on_error": "retry",
+            "max_retries": 2,
             "next_step": "read_handlers",
         },
 
@@ -80,26 +103,38 @@ PROGRAM_SPRINT: dict = {
                 "## Sprint specification\n$sprint_spec\n\n"
                 "## Current file: nano_vm_mcp/handlers.py\n$read_handlers.output\n\n"
                 "## Task\n"
-                "Implement ONLY the handlers.py changes from the specification above.\n"
+                "Produce a Search&Replace patch for ONLY the handlers.py changes "
+                "described in the specification above.\n\n"
                 "Rules:\n"
-                "- Follow existing code style exactly.\n"
-                "- Use 'from __future__ import annotations' (double underscores).\n"
-                "- mypy --strict must pass (0 errors).\n"
-                "- Return the COMPLETE file content (not a diff).\n\n"
+                "- Each SEARCH block must match exactly once in the file shown above.\n"
+                "- Preserve indentation and code style exactly.\n"
+                "- mypy --strict must pass after the patch (0 errors).\n"
+                "- Output ONLY patch blocks — no explanation, no markdown prose.\n\n"
                 "## Output format — CRITICAL\n"
-                "Return ONLY a valid JSON object with ONE key:\n"
-                "{\"nano_vm_mcp/handlers.py\": \"...complete file content...\"}\n"
-                "No markdown fences. No explanation. Pure JSON only."
+                "Return one or more blocks in this exact format:\n\n"
+                "<<<SEARCH\n"
+                "<exact lines from current file>\n"
+                "=======\n"
+                "<replacement lines>\n"
+                ">>>REPLACE\n\n"
+                "Multiple blocks are allowed. No other text."
             ),
             "output_key": "handlers_patch",
-            "timeout_seconds": 300,
+            "on_error": "retry",
+            "max_retries": 2,
+            "timeout_seconds": 120,
             "on_timeout": "fail",
         },
         {
-            "id": "write_handlers",
+            "id": "apply_handlers",
             "type": "tool",
-            "tool": "write_repo_files",
-            "args": {"files_json": "$handlers_patch"},
+            "tool": "apply_search_replace_patch",
+            "args": {
+                "file_path": "$handlers_file",
+                "patch_text": "$handlers_patch",
+            },
+            "on_error": "retry",
+            "max_retries": 2,
             "next_step": "read_tools",
         },
 
@@ -120,26 +155,38 @@ PROGRAM_SPRINT: dict = {
                 "## Sprint specification\n$sprint_spec\n\n"
                 "## Current file: nano_vm_mcp/tools.py\n$read_tools.output\n\n"
                 "## Task\n"
-                "Implement ONLY the tools.py changes from the specification above.\n"
+                "Produce a Search&Replace patch for ONLY the tools.py changes "
+                "described in the specification above.\n\n"
                 "Rules:\n"
-                "- Follow existing code style exactly.\n"
-                "- Use 'from __future__ import annotations' (double underscores).\n"
-                "- mypy --strict must pass (0 errors).\n"
-                "- Return the COMPLETE file content (not a diff).\n\n"
+                "- Each SEARCH block must match exactly once in the file shown above.\n"
+                "- Preserve indentation and code style exactly.\n"
+                "- mypy --strict must pass after the patch (0 errors).\n"
+                "- Output ONLY patch blocks — no explanation, no markdown prose.\n\n"
                 "## Output format — CRITICAL\n"
-                "Return ONLY a valid JSON object with ONE key:\n"
-                "{\"nano_vm_mcp/tools.py\": \"...complete file content...\"}\n"
-                "No markdown fences. No explanation. Pure JSON only."
+                "Return one or more blocks in this exact format:\n\n"
+                "<<<SEARCH\n"
+                "<exact lines from current file>\n"
+                "=======\n"
+                "<replacement lines>\n"
+                ">>>REPLACE\n\n"
+                "Multiple blocks are allowed. No other text."
             ),
             "output_key": "tools_patch",
-            "timeout_seconds": 300,
+            "on_error": "retry",
+            "max_retries": 2,
+            "timeout_seconds": 120,
             "on_timeout": "fail",
         },
         {
-            "id": "write_tools",
+            "id": "apply_tools",
             "type": "tool",
-            "tool": "write_repo_files",
-            "args": {"files_json": "$tools_patch"},
+            "tool": "apply_search_replace_patch",
+            "args": {
+                "file_path": "$tools_file",
+                "patch_text": "$tools_patch",
+            },
+            "on_error": "retry",
+            "max_retries": 2,
             "next_step": "generate_test",
         },
 
@@ -153,12 +200,12 @@ PROGRAM_SPRINT: dict = {
                 "You are an expert Python developer.\n\n"
                 "## Sprint specification\n$sprint_spec\n\n"
                 "## Task\n"
-                "Write the test file '$test_file' for the sprint above.\n"
+                "Write the complete test file '$test_file' for the sprint above.\n\n"
                 "Rules:\n"
                 "- Use pytest (no unittest).\n"
                 "- Use 'from __future__ import annotations' (double underscores).\n"
                 "- Tests must be async-compatible if needed (pytest-asyncio).\n"
-                "- Cover all test cases listed in spec (IP-01..IP-10).\n"
+                "- Cover all test cases listed in spec.\n"
                 "- Use tmp_path fixture for SQLite db.\n"
                 "- Import from nano_vm_mcp.store and nano_vm_mcp.handlers.\n\n"
                 "## Output format — CRITICAL\n"
@@ -167,7 +214,7 @@ PROGRAM_SPRINT: dict = {
                 "No markdown fences. No explanation. Pure JSON only."
             ),
             "output_key": "test_patch",
-            "timeout_seconds": 300,
+            "timeout_seconds": 120,
             "on_timeout": "fail",
         },
         {
