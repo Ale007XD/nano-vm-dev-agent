@@ -13,8 +13,19 @@ subprocess timeout: 120s per call — guards against hanging linters/tests.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import Any
+
+
+def _strip_fences(text: str) -> str:
+    """Strip markdown code fences (```json ... ``` or ``` ... ```) from LLM output."""
+    text = text.strip()
+    # Remove opening fence: ```json or ```
+    text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+    # Remove closing fence
+    text = re.sub(r"\n?```$", "", text)
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -91,16 +102,22 @@ def run_pytest(test_file: str, **kwargs: Any) -> str:
     """Run pytest on a single test file.
 
     Args:
-        test_file: path to the test file.
+        test_file: absolute path to the test file.
 
     Returns:
         'PASS' if pytest exits 0, otherwise pytest stdout (failure details).
     """
+    import os
+    # Run from the directory containing the test file so imports resolve correctly
+    repo_path: str = kwargs.get("repo_path", "") or str(os.path.dirname(test_file))
+    cwd = repo_path if os.path.isdir(repo_path) else os.path.dirname(test_file)
+
     result = subprocess.run(
-        ["pytest", test_file, "-v", "--tb=short"],
+        ["python3", "-m", "pytest", test_file, "-v", "--tb=short"],
         capture_output=True,
         text=True,
         timeout=120,
+        cwd=cwd,
     )
     if result.returncode == 0:
         return "PASS"
@@ -115,29 +132,57 @@ def write_repo_files(files_json: str, **kwargs: Any) -> str:
     """Write patched files to disk.
 
     Args:
-        files_json: JSON string of dict[str, str] — {path: content}.
+        files_json: JSON string of dict[str, str] — {relative_path: content}.
+                    LLM markdown fences and double-encoding are handled automatically.
 
     Returns:
         'WRITTEN: path1, path2, ...'
 
     Raises:
-        ValueError: if files_json is not valid JSON dict.
+        ValueError: if files_json cannot be parsed as JSON dict.
     """
+    import os
+
+    repo_path: str = kwargs.get("repo_path", "") or ""
+
+    import sys
+    print(f"[DEBUG] type={type(files_json)} len={len(files_json)}", file=sys.stderr)
+    print(f"[DEBUG] first_200={files_json[:200]!r}", file=sys.stderr)
+    print(f"[DEBUG] last_50={files_json[-50:]!r}", file=sys.stderr)
+
+    # Strip markdown fences if LLM wrapped output
+    clean = _strip_fences(files_json)
+
+    # First parse
     try:
-        files: dict[str, str] = json.loads(files_json)
+        parsed: Any = json.loads(clean)
     except json.JSONDecodeError as exc:
         raise ValueError(
-            f"write_repo_files: files_json must be JSON dict, got: {files_json[:120]!r}"
+            f"write_repo_files: files_json must be JSON dict, got: {clean[:120]!r}"
         ) from exc
 
-    if not isinstance(files, dict):
-        raise ValueError(f"write_repo_files: expected dict, got {type(files).__name__}")
+    # If LLM double-encoded (returned a JSON string containing JSON), unwrap once more
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"write_repo_files: double-encoded JSON unwrap failed, got: {parsed[:120]!r}"
+            ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"write_repo_files: expected dict, got {type(parsed).__name__}")
+
+    files: dict[str, str] = parsed
 
     written: list[str] = []
-    for path, content in files.items():
-        with open(path, "w", encoding="utf-8") as fh:
+    for rel_path, content in files.items():
+        # Resolve path relative to repo_path if not absolute
+        full_path = rel_path if os.path.isabs(rel_path) else os.path.join(repo_path, rel_path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as fh:
             fh.write(content)
-        written.append(path)
+        written.append(full_path)
 
     return f"WRITTEN: {', '.join(written)}"
 
