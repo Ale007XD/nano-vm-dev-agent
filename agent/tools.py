@@ -26,6 +26,21 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
+def _extract_json_object(text: str) -> str:
+    """Extract the outermost JSON object {...} from text that may contain prose/thinking.
+
+    Handles models that prefix output with reasoning, <tool_call> blocks, or other text
+    before the actual JSON payload.
+
+    Returns the extracted JSON substring, or the original text if no braces found.
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return text
+    return text[start : end + 1]
+
+
 # ---------------------------------------------------------------------------
 # read_repo_files
 # ---------------------------------------------------------------------------
@@ -241,6 +256,7 @@ def write_repo_files(files_json: str, **kwargs: Any) -> str:
     print(f"[DEBUG] last_50={files_json[-50:]!r}", file=sys.stderr)
 
     clean = _strip_fences(files_json)
+    clean = _extract_json_object(clean)
 
     try:
         parsed: Any = json.loads(clean)
