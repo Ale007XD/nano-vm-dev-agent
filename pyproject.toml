@@ -30,6 +30,9 @@ timeout = 30
 strict = true
 ignore_missing_imports = true
 
+[tool.hatch.build.targets.wheel]
+packages = ["agent"]
+
 [tool.ruff]
 line-length = 100
 
