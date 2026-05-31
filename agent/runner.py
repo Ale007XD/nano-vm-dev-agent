@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
-
 from collections.abc import Callable
+from typing import Any
 
 from nano_vm.adapters.base import LLMAdapter
 from nano_vm.adapters.litellm_adapter import LiteLLMAdapter
