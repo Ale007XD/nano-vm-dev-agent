@@ -18,6 +18,9 @@ import json
 import os
 from typing import Any
 
+from collections.abc import Callable
+
+from nano_vm.adapters.base import LLMAdapter
 from nano_vm.adapters.litellm_adapter import LiteLLMAdapter
 from nano_vm.models import Program, Trace
 from nano_vm.vm import ExecutionVM
@@ -106,7 +109,7 @@ def _resolve_provider() -> tuple[str, dict[str, Any]]:
 def build_adapter(
     llm_model: str | None = None,
     adapter_kwargs: dict[str, Any] | None = None,
-) -> tuple[LiteLLMAdapter, str]:
+) -> tuple[LLMAdapter, str]:
     """Build LiteLLMAdapter from environment configuration.
 
     Args:
@@ -132,7 +135,7 @@ def build_adapter(
     # Set litellm env vars before adapter init (litellm reads them at call time)
     if provider_name == "vibecode":
         os.environ["OPENAI_API_KEY"] = api_key
-        os.environ["OPENAI_API_BASE"] = api_base  # type: ignore[arg-type]
+        os.environ["OPENAI_API_BASE"] = api_base or ""
     elif provider_name == "openrouter":
         os.environ["OPENROUTER_API_KEY"] = api_key
     elif provider_name == "anthropic":
@@ -173,9 +176,9 @@ async def run_sprint(
         Trace from ExecutionVM.run().
     """
     adapter, provider_name = build_adapter(llm_model, adapter_kwargs)
-    print(f"[runner] provider={provider_name} model={adapter._model}")  # type: ignore[attr-defined]
+    print(f"[runner] provider={provider_name}")
 
-    tools = {
+    tools: dict[str, Callable[..., Any]] = {
         "read_repo_files":            read_repo_files,
         "apply_search_replace_patch": apply_search_replace_patch,
         "run_mypy":                   run_mypy,

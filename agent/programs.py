@@ -30,7 +30,9 @@ apply_search_replace_patch validates uniqueness and raises ValueError on mismatc
 
 from __future__ import annotations
 
-PROGRAM_SPRINT: dict = {
+from typing import Any
+
+PROGRAM_SPRINT: dict[str, Any] = {
     "name": "sprint_execution",
     "steps": [
 
