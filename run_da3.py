@@ -191,8 +191,9 @@ async def main() -> None:
     print("=" * 60)
 
     try:
-        from agent.runner import run_sprint
         from nano_vm.models import TraceStatus
+
+        from agent.runner import run_sprint
     except ImportError as exc:
         print(f"ERROR: import failed — {exc}")
         print("Run: pip install llm-nano-vm[litellm]")

@@ -30,6 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.programs import PROGRAM_SPRINT
 from agent.tools import (
     apply_search_replace_patch,
     read_repo_files,
@@ -37,8 +38,6 @@ from agent.tools import (
     run_pytest,
     write_repo_files,
 )
-from agent.programs import PROGRAM_SPRINT
-
 
 # ---------------------------------------------------------------------------
 # Inline mock adapters (no real API needed)

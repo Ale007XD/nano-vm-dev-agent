@@ -6,11 +6,8 @@ Shared fixtures for nano-vm-dev-agent tests.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import textwrap
 from pathlib import Path
-from typing import Any
 
 import pytest
 
