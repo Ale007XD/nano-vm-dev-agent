@@ -3,29 +3,28 @@ agent/programs.py
 =================
 PROGRAM_SPRINT — deterministic FSM pipeline for sprint execution.
 
-Flow (Search&Replace delta per LLM call — avoids token limit):
-  read_store → patch_store(llm, S&R) → apply_store
-  → read_handlers → patch_handlers(llm, S&R) → apply_handlers
-  → read_tools → patch_tools(llm, S&R) → apply_tools
-  → generate_test(llm, full file) → write_test
-  → run_mypy → mypy_guard
-  → run_tests → pytest_guard
-  → notify_done | reject_mypy | reject_pytest
+Flow (DA-4 transactional patching):
 
-LLM steps for source files return S&R delta blocks, not full files.
-This keeps each response well under provider token limits for files of any size.
+  read_store → patch_store(llm) → stage_store       ← in-memory, disk untouched
+  read_handlers → patch_handlers(llm) → stage_handlers
+  read_tools → patch_tools(llm) → stage_tools
+  generate_test(llm) → write_test                   ← test written to disk (disposable)
 
-Test is generated last (full file, small) so it can reference all patched sources.
+  validate_staged_mypy                              ← mypy in tmpdir, disk untouched
+  mypy_guard
+    ↓ fail → rollback_patches → reject_mypy         ← buffer cleared, disk clean
+    ↓ pass → commit_patches                         ← flush buffer to disk
 
-S&R block format:
-  <<<SEARCH
-  <exact block to find — must match exactly once>
-  =======
-  <replacement>
-  >>>REPLACE
+  run_tests                                         ← pytest against committed files
+  pytest_guard
+    ↓ fail → git_checkout_files → reject_pytest     ← git restores HEAD
+    ↓ pass → notify_done
 
-apply_search_replace_patch validates uniqueness and raises ValueError on mismatch
-→ FSM on_error=retry will re-ask the LLM for a corrected patch.
+Guarantees:
+- Disk is never touched by source patches until mypy passes.
+- If mypy fails: rollback_patches() — disk remains at HEAD.
+- If pytest fails: git_checkout_files() restores committed files to HEAD.
+- Test file is written directly (disposable — safe to overwrite on retry).
 """
 
 from __future__ import annotations
@@ -76,9 +75,9 @@ PROGRAM_SPRINT: dict[str, Any] = {
             "on_timeout": "fail",
         },
         {
-            "id": "apply_store",
+            "id": "stage_store",
             "type": "tool",
-            "tool": "apply_search_replace_patch",
+            "tool": "stage_patch",
             "args": {
                 "file_path": "$store_file",
                 "patch_text": "$store_patch",
@@ -128,9 +127,9 @@ PROGRAM_SPRINT: dict[str, Any] = {
             "on_timeout": "fail",
         },
         {
-            "id": "apply_handlers",
+            "id": "stage_handlers",
             "type": "tool",
-            "tool": "apply_search_replace_patch",
+            "tool": "stage_patch",
             "args": {
                 "file_path": "$handlers_file",
                 "patch_text": "$handlers_patch",
@@ -180,9 +179,9 @@ PROGRAM_SPRINT: dict[str, Any] = {
             "on_timeout": "fail",
         },
         {
-            "id": "apply_tools",
+            "id": "stage_tools",
             "type": "tool",
-            "tool": "apply_search_replace_patch",
+            "tool": "stage_patch",
             "args": {
                 "file_path": "$tools_file",
                 "patch_text": "$tools_patch",
@@ -193,7 +192,7 @@ PROGRAM_SPRINT: dict[str, Any] = {
         },
 
         # ----------------------------------------------------------------
-        # test file (generated last — all source files already patched)
+        # test file — written to disk directly (disposable)
         # ----------------------------------------------------------------
         {
             "id": "generate_test",
@@ -224,26 +223,50 @@ PROGRAM_SPRINT: dict[str, Any] = {
             "type": "tool",
             "tool": "write_repo_files",
             "args": {"files_json": "$test_patch"},
-            "next_step": "run_mypy",
+            "next_step": "validate_mypy",
         },
 
         # ----------------------------------------------------------------
-        # Validation
+        # mypy in tmpdir — disk untouched
         # ----------------------------------------------------------------
         {
-            "id": "run_mypy",
+            "id": "validate_mypy",
             "type": "tool",
-            "tool": "run_mypy",
+            "tool": "validate_staged_mypy",
             "args": {"paths": "$target_files"},
             "next_step": "mypy_guard",
         },
         {
             "id": "mypy_guard",
             "type": "condition",
-            "condition": "$run_mypy.output == 'OK'",
-            "then": "run_tests",
-            "otherwise": "reject_mypy",
+            "condition": "$validate_mypy.output == 'OK'",
+            "then": "commit",
+            "otherwise": "do_rollback_mypy",
         },
+
+        # ----------------------------------------------------------------
+        # mypy fail path — rollback buffer, disk never touched
+        # ----------------------------------------------------------------
+        {
+            "id": "do_rollback_mypy",
+            "type": "tool",
+            "tool": "rollback_patches",
+            "next_step": "reject_mypy",
+        },
+
+        # ----------------------------------------------------------------
+        # commit — flush buffer to disk
+        # ----------------------------------------------------------------
+        {
+            "id": "commit",
+            "type": "tool",
+            "tool": "commit_patches",
+            "next_step": "run_tests",
+        },
+
+        # ----------------------------------------------------------------
+        # pytest — against committed files on disk
+        # ----------------------------------------------------------------
         {
             "id": "run_tests",
             "type": "tool",
@@ -256,7 +279,18 @@ PROGRAM_SPRINT: dict[str, Any] = {
             "type": "condition",
             "condition": "$run_tests.output == 'PASS'",
             "then": "notify_done",
-            "otherwise": "reject_pytest",
+            "otherwise": "do_rollback_pytest",
+        },
+
+        # ----------------------------------------------------------------
+        # pytest fail path — git checkout restores committed files to HEAD
+        # ----------------------------------------------------------------
+        {
+            "id": "do_rollback_pytest",
+            "type": "tool",
+            "tool": "git_checkout_files",
+            "args": {"paths": "$target_files"},
+            "next_step": "reject_pytest",
         },
 
         # ----------------------------------------------------------------
