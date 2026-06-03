@@ -33,9 +33,14 @@ import pytest
 from agent.programs import PROGRAM_SPRINT
 from agent.tools import (
     apply_search_replace_patch,
+    commit_patches,
+    git_checkout_files,
     read_repo_files,
+    rollback_patches,
     run_mypy,
     run_pytest,
+    stage_patch,
+    validate_staged_mypy,
     write_repo_files,
 )
 
@@ -265,6 +270,11 @@ def _build_vm(
         tools={
             "read_repo_files":            read_repo_files,
             "apply_search_replace_patch": apply_search_replace_patch,
+            "stage_patch":                stage_patch,
+            "validate_staged_mypy":       lambda paths, **kw: mypy_result,
+            "commit_patches":             commit_patches,
+            "rollback_patches":           rollback_patches,
+            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
             "run_mypy":                   lambda paths, **kw: mypy_result,
             "run_pytest":                 lambda test_file, **kw: pytest_result,
             "write_repo_files":           write_repo_files,
@@ -364,6 +374,11 @@ async def test_da_12_llm_timeout(tmp_path: Path) -> None:
         tools={
             "read_repo_files":            read_repo_files,
             "apply_search_replace_patch": apply_search_replace_patch,
+            "stage_patch":                stage_patch,
+            "validate_staged_mypy":       lambda paths, **kw: "OK",
+            "commit_patches":             commit_patches,
+            "rollback_patches":           rollback_patches,
+            "git_checkout_files":         lambda paths, **kw: "RESTORED:",
             "run_mypy":                   lambda paths, **kw: "OK",
             "run_pytest":                 lambda test_file, **kw: "PASS",
             "write_repo_files":           write_repo_files,
