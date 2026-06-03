@@ -27,6 +27,7 @@ import os
 import sys
 import types
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ def _reload_tools() -> types.ModuleType:
 # DA4-01  stage reads from disk, buffer holds result, disk unchanged
 # ---------------------------------------------------------------------------
 
-def test_da4_01_stage_reads_disk_buffer_populated(tmp_path: os.PathLike[str]) -> None:
+def test_da4_01_stage_reads_disk_buffer_populated(tmp_path: "os.PathLike[str]") -> None:
     tools = _reload_tools()
     f = tmp_path / "sample.py"
     f.write_text("x = 1\ny = 2\n", encoding="utf-8")
@@ -67,7 +68,7 @@ def test_da4_01_stage_reads_disk_buffer_populated(tmp_path: os.PathLike[str]) ->
 # DA4-02  second stage_patch reads from buffer, not disk
 # ---------------------------------------------------------------------------
 
-def test_da4_02_stage_accumulates_from_buffer(tmp_path: os.PathLike[str]) -> None:
+def test_da4_02_stage_accumulates_from_buffer(tmp_path: "os.PathLike[str]") -> None:
     tools = _reload_tools()
     f = tmp_path / "sample.py"
     f.write_text("x = 1\ny = 2\n", encoding="utf-8")
@@ -89,7 +90,7 @@ def test_da4_02_stage_accumulates_from_buffer(tmp_path: os.PathLike[str]) -> Non
 # DA4-03  stage_patch: no S&R blocks → ValueError
 # ---------------------------------------------------------------------------
 
-def test_da4_03_stage_no_blocks(tmp_path: os.PathLike[str]) -> None:
+def test_da4_03_stage_no_blocks(tmp_path: "os.PathLike[str]") -> None:
     import pytest
     tools = _reload_tools()
     f = tmp_path / "sample.py"
@@ -103,7 +104,7 @@ def test_da4_03_stage_no_blocks(tmp_path: os.PathLike[str]) -> None:
 # DA4-04  stage_patch: SEARCH not found → ValueError
 # ---------------------------------------------------------------------------
 
-def test_da4_04_stage_search_not_found(tmp_path: os.PathLike[str]) -> None:
+def test_da4_04_stage_search_not_found(tmp_path: "os.PathLike[str]") -> None:
     import pytest
     tools = _reload_tools()
     f = tmp_path / "sample.py"
@@ -118,7 +119,7 @@ def test_da4_04_stage_search_not_found(tmp_path: os.PathLike[str]) -> None:
 # DA4-05  stage_patch: SEARCH matches > 1 → ValueError
 # ---------------------------------------------------------------------------
 
-def test_da4_05_stage_search_ambiguous(tmp_path: os.PathLike[str]) -> None:
+def test_da4_05_stage_search_ambiguous(tmp_path: "os.PathLike[str]") -> None:
     import pytest
     tools = _reload_tools()
     f = tmp_path / "sample.py"
@@ -133,7 +134,7 @@ def test_da4_05_stage_search_ambiguous(tmp_path: os.PathLike[str]) -> None:
 # DA4-06  commit_patches: writes to disk, clears buffer
 # ---------------------------------------------------------------------------
 
-def test_da4_06_commit_writes_and_clears(tmp_path: os.PathLike[str]) -> None:
+def test_da4_06_commit_writes_and_clears(tmp_path: "os.PathLike[str]") -> None:
     tools = _reload_tools()
     f = tmp_path / "sample.py"
     f.write_text("x = 1\n", encoding="utf-8")
@@ -161,7 +162,7 @@ def test_da4_07_commit_empty_buffer() -> None:
 # DA4-08  rollback_patches: clears buffer, disk unchanged
 # ---------------------------------------------------------------------------
 
-def test_da4_08_rollback_clears_buffer_disk_safe(tmp_path: os.PathLike[str]) -> None:
+def test_da4_08_rollback_clears_buffer_disk_safe(tmp_path: "os.PathLike[str]") -> None:
     tools = _reload_tools()
     f = tmp_path / "sample.py"
     f.write_text("x = 1\n", encoding="utf-8")
@@ -189,7 +190,7 @@ def test_da4_09_rollback_empty_buffer() -> None:
 # DA4-10  validate_staged_mypy: OK on valid Python
 # ---------------------------------------------------------------------------
 
-def test_da4_10_validate_staged_mypy_ok(tmp_path: os.PathLike[str]) -> None:
+def test_da4_10_validate_staged_mypy_ok(tmp_path: "os.PathLike[str]") -> None:
     tools = _reload_tools()
     # Stage a trivially valid typed Python file
     f = tmp_path / "mod.py"
@@ -213,7 +214,7 @@ def test_da4_10_validate_staged_mypy_ok(tmp_path: os.PathLike[str]) -> None:
 # DA4-11  validate_staged_mypy: returns errors on type-invalid Python
 # ---------------------------------------------------------------------------
 
-def test_da4_11_validate_staged_mypy_fail(tmp_path: os.PathLike[str]) -> None:
+def test_da4_11_validate_staged_mypy_fail(tmp_path: "os.PathLike[str]") -> None:
     tools = _reload_tools()
     f = tmp_path / "bad.py"
     f.write_text("x: int = 1\n", encoding="utf-8")
@@ -244,7 +245,7 @@ def test_da4_12_git_checkout_invalid_paths() -> None:
 # DA4-13  happy path: stage → validate OK → commit → disk updated
 # ---------------------------------------------------------------------------
 
-def test_da4_13_happy_path(tmp_path: os.PathLike[str]) -> None:
+def test_da4_13_happy_path(tmp_path: "os.PathLike[str]") -> None:
     tools = _reload_tools()
     f = tmp_path / "mod.py"
     f.write_text("x: int = 1\n", encoding="utf-8")
@@ -268,7 +269,7 @@ def test_da4_13_happy_path(tmp_path: os.PathLike[str]) -> None:
 # DA4-14  fail path: stage → validate fail → rollback → disk clean
 # ---------------------------------------------------------------------------
 
-def test_da4_14_fail_path_rollback(tmp_path: os.PathLike[str]) -> None:
+def test_da4_14_fail_path_rollback(tmp_path: "os.PathLike[str]") -> None:
     tools = _reload_tools()
     f = tmp_path / "mod.py"
     f.write_text("x: int = 1\n", encoding="utf-8")
