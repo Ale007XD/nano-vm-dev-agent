@@ -34,13 +34,11 @@ from agent.programs import PROGRAM_SPRINT
 from agent.tools import (
     apply_search_replace_patch,
     commit_patches,
-    git_checkout_files,
     read_repo_files,
     rollback_patches,
     run_mypy,
     run_pytest,
     stage_patch,
-    validate_staged_mypy,
     write_repo_files,
 )
 
