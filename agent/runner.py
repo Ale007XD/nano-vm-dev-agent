@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from nano_vm.adapters.base import LLMAdapter
 from nano_vm.adapters.litellm_adapter import LiteLLMAdapter
@@ -27,12 +27,17 @@ from nano_vm.vm import ExecutionVM
 from .programs import PROGRAM_SPRINT
 from .tools import (
     apply_search_replace_patch,
+    commit_patches,
+    git_checkout_files,
     notify_done,
     notify_rejected_mypy,
     notify_rejected_pytest,
     read_repo_files,
+    rollback_patches,
     run_mypy,
     run_pytest,
+    stage_patch,
+    validate_staged_mypy,
     write_repo_files,
 )
 
@@ -146,7 +151,7 @@ def build_adapter(
         kwargs["api_base"] = api_base
 
     adapter = LiteLLMAdapter(model, **kwargs)
-    return adapter, provider_name
+    return cast(LLMAdapter, adapter), provider_name
 
 
 async def run_sprint(
@@ -180,6 +185,11 @@ async def run_sprint(
     tools: dict[str, Callable[..., Any]] = {
         "read_repo_files":            read_repo_files,
         "apply_search_replace_patch": apply_search_replace_patch,
+        "stage_patch":                stage_patch,
+        "validate_staged_mypy":       validate_staged_mypy,
+        "commit_patches":             commit_patches,
+        "rollback_patches":           rollback_patches,
+        "git_checkout_files":         git_checkout_files,
         "run_mypy":                   run_mypy,
         "run_pytest":                 run_pytest,
         "write_repo_files":           write_repo_files,
