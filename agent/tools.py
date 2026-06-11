@@ -48,6 +48,66 @@ _patch_buffer: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
+# FailureFingerprint
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FailureFingerprint:
+    """Canonical fingerprint for a repeating failure pattern.
+
+    Fields:
+        tool:        Tool name that failed (e.g. 'run_mypy', 'write_repo_files').
+        error_class: Error category (e.g. 'arg-type', 'expected_dict', 'no_choices').
+        pattern:     Optional sub-pattern wildcard; '*' means any value matches.
+
+    Key format: '{tool}:{error_class}:{pattern}'
+    """
+
+    tool: str
+    error_class: str
+    pattern: str = "*"
+
+    def key(self) -> str:
+        return f"{self.tool}:{self.error_class}:{self.pattern}"
+
+
+# Module-level seen-fingerprints state (reset per process / test via clear_fingerprints)
+_seen_fingerprints: set[str] = set()
+
+# Known fingerprints that indicate non-convergent failure (escalate, not retry)
+KNOWN_FINGERPRINTS: frozenset[str] = frozenset(
+    [
+        "mypy:arg-type:*",
+        "write_repo_files:expected_dict:*",
+        "CustomStreamWrapper:no_choices:*",
+    ]
+)
+
+
+def record_fingerprint(fp: FailureFingerprint) -> None:
+    """Record a fingerprint as seen in the current agent run."""
+    _seen_fingerprints.add(fp.key())
+
+
+def check_fingerprint(fp: FailureFingerprint) -> bool:
+    """Return True if this fingerprint has been seen before → caller should ESCALATE."""
+    return fp.key() in _seen_fingerprints
+
+
+def clear_fingerprints() -> None:
+    """Reset seen-fingerprints state (call at sprint start or in tests)."""
+    _seen_fingerprints.clear()
+
+
+def get_seen_fingerprints() -> frozenset[str]:
+    """Return immutable snapshot of currently seen fingerprints."""
+    return frozenset(_seen_fingerprints)
+
+
+# ---------------------------------------------------------------------------
 # S&R core
 # ---------------------------------------------------------------------------
 
