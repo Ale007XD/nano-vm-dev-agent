@@ -52,7 +52,6 @@ _patch_buffer: dict[str, str] = {}
 # FailureFingerprint
 # ---------------------------------------------------------------------------
 
-from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
