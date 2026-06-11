@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from agent.tools import (
-    FailureFingerprint,
     KNOWN_FINGERPRINTS,
+    FailureFingerprint,
     check_fingerprint,
     clear_fingerprints,
     get_seen_fingerprints,
