@@ -35,7 +35,7 @@ def test_fp_key_explicit_pattern() -> None:
 def test_fp_frozen() -> None:
     fp = FailureFingerprint(tool="run_mypy", error_class="arg-type")
     with pytest.raises(Exception):
-        object.__setattr__(fp, "tool", "other")  # type: ignore[call-overload]
+        fp.tool = "other"  # type: ignore[misc]
 
 
 # FP-04: check_fingerprint returns False before record
