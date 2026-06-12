@@ -1,549 +1,303 @@
-"""
-agent/tools.py
-==============
-Synchronous tool functions for the FSM dev-agent pipeline.
-
-All functions accept **kwargs because ExecutionVM passes the full context
-to every tool call. Arguments that carry data are passed as JSON strings
-to stay compatible with DSL $var resolution (which always produces str).
-
-subprocess timeout: 120s per call — guards against hanging linters/tests.
-
-Transactional patching (DA-4):
-  stage_patch()          — S&R in-memory → _patch_buffer[path] = patched content
-  validate_staged_mypy() — copy buffer to tmpdir, run mypy there (disk untouched)
-  commit_patches()       — flush _patch_buffer to disk atomically, clear buffer
-  rollback_patches()     — clear _patch_buffer without writing to disk
-  git_checkout_files()   — git checkout safety net after pytest-fail post-commit
-"""
+"""nano_vm_mcp.tools — MCP tool implementations."""
 
 from __future__ import annotations
 
-import json
-import re
-import subprocess
-from dataclasses import dataclass
+import logging
+import os
+import uuid
 from typing import Any
 
+try:
+    import httpx
 
-def _strip_fences(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-    text = re.sub(r"\n?```$", "", text)
-    return text.strip()
+    _HTTPX_AVAILABLE = True
+except ImportError:
+    _HTTPX_AVAILABLE = False
 
+from nano_vm import ExecutionVM, Program
+from nano_vm.adapters import MockLLMAdapter
+from pydantic import ValidationError
 
-def _extract_json_object(text: str) -> str:
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return text
-    return text[start : end + 1]
+from .store import ProgramStore
 
+logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Transactional patch buffer
-# ---------------------------------------------------------------------------
-
-_patch_buffer: dict[str, str] = {}
-
-
-# ---------------------------------------------------------------------------
-# FailureFingerprint
-# ---------------------------------------------------------------------------
-
-
-
-@dataclass(frozen=True)
-class FailureFingerprint:
-    """Canonical fingerprint for a repeating failure pattern.
-
-    Fields:
-        tool:        Tool name that failed (e.g. 'run_mypy', 'write_repo_files').
-        error_class: Error category (e.g. 'arg-type', 'expected_dict', 'no_choices').
-        pattern:     Optional sub-pattern wildcard; '*' means any value matches.
-
-    Key format: '{tool}:{error_class}:{pattern}'
-    """
-
-    tool: str
-    error_class: str
-    pattern: str = "*"
-
-    def key(self) -> str:
-        return f"{self.tool}:{self.error_class}:{self.pattern}"
-
-
-# Module-level seen-fingerprints state (reset per process / test via clear_fingerprints)
-_seen_fingerprints: set[str] = set()
-
-# Known fingerprints that indicate non-convergent failure (escalate, not retry)
-KNOWN_FINGERPRINTS: frozenset[str] = frozenset(
-    [
-        "mypy:arg-type:*",
-        "write_repo_files:expected_dict:*",
-        "CustomStreamWrapper:no_choices:*",
-    ]
+AGENT_DEBUGGER_URL = os.getenv(
+    "AGENT_DEBUGGER_URL",
+    "https://agent-debugger-production.up.railway.app",
 )
+AGENT_DEBUGGER_TOKEN = os.getenv("AGENT_DEBUGGER_TOKEN", "")
 
 
-def record_fingerprint(fp: FailureFingerprint) -> None:
-    """Record a fingerprint as seen in the current agent run."""
-    _seen_fingerprints.add(fp.key())
+def _has_llm_steps(program_data: dict[str, Any]) -> bool:
+    """Return True if any step (including parallel sub-steps) requires an LLM."""
+
+    def _scan(steps: list[dict[str, Any]]) -> bool:
+        for step in steps:
+            if step.get("type") == "llm":
+                return True
+            if step.get("type") == "parallel":
+                if _scan(step.get("parallel_steps", [])):
+                    return True
+        return False
+
+    return _scan(program_data.get("steps", []))
 
 
-def check_fingerprint(fp: FailureFingerprint) -> bool:
-    """Return True if this fingerprint has been seen before → caller should ESCALATE."""
-    return fp.key() in _seen_fingerprints
+def _build_vm(program_data: dict[str, Any]) -> ExecutionVM | str:
+    """
+    Build ExecutionVM with the appropriate LLM adapter.
+
+    - tool/condition/parallel-only programs: MockLLMAdapter("noop") — no API key needed.
+    - programs with llm steps: LiteLLMAdapter from NANO_VM_MCP_LLM_MODEL env var.
+
+    Returns ExecutionVM on success, or a str error message if llm steps are present
+    but NANO_VM_MCP_LLM_MODEL is not configured.
+    """
+    if not _has_llm_steps(program_data):
+        return ExecutionVM(llm=MockLLMAdapter("noop"))
+
+    model = os.getenv("NANO_VM_MCP_LLM_MODEL", "")
+    if not model:
+        return (
+            "Program contains llm steps but NANO_VM_MCP_LLM_MODEL is not set. "
+            "Set NANO_VM_MCP_LLM_MODEL (e.g. 'openrouter/llama-3.3-70b-instruct:free') "
+            "and the corresponding API key in your environment."
+        )
+    try:
+        from nano_vm.adapters import LiteLLMAdapter
+    except ImportError:
+        return (
+            "LiteLLMAdapter is not available. Install it with: pip install 'nano-vm-mcp[litellm]'"
+        )
+    return ExecutionVM(llm=LiteLLMAdapter(model))
 
 
-def clear_fingerprints() -> None:
-    """Reset seen-fingerprints state (call at sprint start or in tests)."""
-    _seen_fingerprints.clear()
+def _extract_cost(trace: Any) -> float:
+    """
+    Извлекает стоимость из Trace совместимым способом.
+
+    total_cost_usd — метод (callable), не property. Нужно вызывать.
+    Fallback на total_cost (атрибут, старые версии).
+    """
+    if hasattr(trace, "total_cost_usd"):
+        val = trace.total_cost_usd
+        # Может быть методом или property в зависимости от версии nano_vm
+        if callable(val):
+            val = val()
+        return float(val or 0.0)
+    if hasattr(trace, "total_cost"):
+        return float(trace.total_cost or 0.0)
+    return 0.0
 
 
-def get_seen_fingerprints() -> frozenset[str]:
-    """Return immutable snapshot of currently seen fingerprints."""
-    return frozenset(_seen_fingerprints)
+def _build_debugger_payload(trace_dict: dict[str, Any]) -> dict[str, Any]:
+    """
+    Build Agent Debugger /analyze payload from stored trace dict.
 
-
-# ---------------------------------------------------------------------------
-# S&R core
-# ---------------------------------------------------------------------------
-
-_SR_PATTERN = re.compile(
-    r"<<<SEARCH\n(.*?)\n=======\n(.*?)\n>>>REPLACE",
-    re.DOTALL,
-)
-
-
-def _apply_sr_blocks(content: str, clean_patch: str, label: str) -> str:
-    """Apply all S&R blocks to content string; raise ValueError on mismatch."""
-    import sys
-
-    blocks = _SR_PATTERN.findall(clean_patch)
-    if not blocks:
-        raise ValueError(
-            f"no S&R blocks found in patch_text. "
-            f"Expected: <<<SEARCH ... ======= ... >>>REPLACE\n"
-            f"Got: {clean_patch[:300]!r}"
+    Maps nano-vm Trace fields to the agreed request schema.
+    FAIL:<reason> sentinels are intentional FSM outputs — not tool errors.
+    """
+    steps = trace_dict.get("steps", [])
+    mapped_steps = []
+    for i, s in enumerate(steps):
+        mapped_steps.append(
+            {
+                "step_id": s.get("step_id", f"step_{i}"),
+                "type": s.get("type", "tool"),
+                "status": str(s.get("status", "UNKNOWN")).split(".")[-1],
+                "output": str(s.get("output", "")),
+                "retries": s.get("retry_count", 0),
+                "duration_ms": s.get("duration_ms", 0),
+            }
         )
 
-    print(f"[S&R] {label}: applying {len(blocks)} block(s)", file=sys.stderr)
+    trace_id = trace_dict.get("trace_id", "")
+    raw_status = str(trace_dict.get("status", "FAILED"))
+    # Normalize "TraceStatus.FAILED" → "FAILED"
+    status = raw_status.split(".")[-1] if "." in raw_status else raw_status
+    return {
+        "trace": {
+            "trace_id": trace_id,
+            "program_name": trace_dict.get("program_name", ""),
+            "status": status,
+            "steps": mapped_steps,
+            "final_step": mapped_steps[-1]["step_id"] if mapped_steps else "",
+            "escalations": 0,
+            "blocked_actions": 0,
+            "transition_entropy": trace_dict.get("transition_entropy", 0.0),
+            "rollback_density": trace_dict.get("rollback_density", 0.0),
+            "tool_churn_rate": trace_dict.get("tool_churn_rate", 0.0),
+        },
+    }
 
-    for idx, (search, replace) in enumerate(blocks):
-        count = content.count(search)
-        if count == 0:
-            raise ValueError(
-                f"block {idx + 1} — SEARCH not found.\n"
-                f"File: {label!r}\n"
-                f"SEARCH ({len(search)} chars):\n{search[:200]!r}"
+
+async def call_agent_debugger(trace_dict: dict[str, Any]) -> dict[str, Any]:
+    """
+    POST trace to Agent Debugger /analyze endpoint.
+
+    Returns diagnostic dict or {"error": reason} if unavailable.
+    Requires AGENT_DEBUGGER_TOKEN env var.
+    """
+    if not _HTTPX_AVAILABLE:
+        return {"error": "httpx not installed — pip install httpx"}
+    if not AGENT_DEBUGGER_TOKEN:
+        return {"error": "AGENT_DEBUGGER_TOKEN not set"}
+
+    payload = _build_debugger_payload(trace_dict)
+    url = f"{AGENT_DEBUGGER_URL.rstrip('/')}/analyze"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={"Authorization": f"Bearer {AGENT_DEBUGGER_TOKEN}"},
             )
-        if count > 1:
-            raise ValueError(
-                f"block {idx + 1} — SEARCH matches {count} times (must be exactly 1).\n"
-                f"File: {label!r}\n"
-                f"SEARCH ({len(search)} chars):\n{search[:200]!r}"
-            )
-        content = content.replace(search, replace, 1)
-        print(f"[S&R]   block {idx + 1}: OK", file=sys.stderr)
-
-    return content
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+    except httpx.HTTPStatusError as exc:
+        return {"error": f"Agent Debugger HTTP {exc.response.status_code}: {exc.response.text}"}
+    except Exception as exc:
+        return {"error": f"Agent Debugger unreachable: {exc}"}
 
 
-# ---------------------------------------------------------------------------
-# read_repo_files
-# ---------------------------------------------------------------------------
+async def debug_trace(store: ProgramStore, trace_id: str) -> dict[str, Any]:
+    """
+    MCP tool: retrieve trace by ID and run Agent Debugger diagnostics.
 
-def read_repo_files(paths: str, **kwargs: Any) -> str:
-    """Read source files from the repository.
+    Returns combined result: trace metadata + diagnostic from Agent Debugger.
+    """
+    trace_dict = store.get_trace(trace_id)
+    if trace_dict is None:
+        return {"error": f"Trace '{trace_id}' not found"}
+
+    diagnostic = await call_agent_debugger(trace_dict)
+    return {
+        "trace_id": trace_id,
+        "status": trace_dict.get("status"),
+        "diagnostic": diagnostic,
+    }
+
+
+async def run_program(
+    store: ProgramStore,
+    program_data: dict[str, Any],
+    save_as: str = "",
+    idempotency_key: str = "",
+) -> dict[str, Any]:
+    """
+    Validate and execute a Program dict.
 
     Args:
-        paths: JSON string of list[str] — file paths to read.
+        store: ProgramStore instance.
+        program_data: Raw dict conforming to nano_vm.Program schema.
+        save_as: Optional name to persist the program in the store.
+        idempotency_key: Optional key for exactly-once execution guarantee (v0.4.0).
 
     Returns:
-        Concatenated file contents separated by '### FILE: {path}' headers.
+        {"trace_id": str, "program_id": str, "status": str,
+         "steps": int, "cost": float, "error": str | None}
     """
     try:
-        path_list: list[str] = json.loads(paths)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"read_repo_files: paths must be JSON list, got: {paths!r}") from exc
+        program = Program.model_validate(program_data)
+    except ValidationError as exc:
+        return {
+            "error": f"Invalid program: {exc.error_count()} validation error(s)",
+            "detail": str(exc),
+        }
 
-    parts: list[str] = []
-    for path in path_list:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                content = fh.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"read_repo_files: file not found: {path!r}")
-        parts.append(f"### FILE: {path}\n{content}")
+    program_id = str(uuid.uuid4())
+    if save_as:
+        store.save_program(program_id, save_as, program_data)
 
-    return "\n\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# apply_search_replace_patch  (direct write — kept for backward compat)
-# ---------------------------------------------------------------------------
-
-def apply_search_replace_patch(file_path: str, patch_text: str, **kwargs: Any) -> str:
-    """Apply a Search&Replace patch directly to a file on disk (immediate write)."""
-    import os
-
-    repo_path: str = kwargs.get("repo_path", "") or ""
-    full_path = file_path if os.path.isabs(file_path) else os.path.join(repo_path, file_path)
+    vm_or_err = _build_vm(program_data)
+    if isinstance(vm_or_err, str):
+        return {"error": vm_or_err}
 
     try:
-        with open(full_path, encoding="utf-8") as fh:
-            content = fh.read()
-    except FileNotFoundError:
-        raise FileNotFoundError(f"apply_search_replace_patch: file not found: {full_path!r}")
+        trace = await vm_or_err.run(program)
+    except Exception as exc:
+        logger.exception("vm_run_failed program_id=%s", program_id)
+        return {"error": f"Execution failed: {exc}", "program_id": program_id}
 
-    clean_patch = _strip_fences(patch_text)
-    content = _apply_sr_blocks(content, clean_patch, full_path)
+    # Use trace.trace_id (UUID4 assigned by ExecutionVM, OTel-ready)
+    # Do NOT generate a new uuid4 — get_trace by trace_id would never match.
+    trace_id = str(trace.trace_id) if hasattr(trace, "trace_id") else str(uuid.uuid4())
+    trace_dict = trace.model_dump(mode="json") if hasattr(trace, "model_dump") else vars(trace)
+    cost = _extract_cost(trace)
 
-    with open(full_path, "w", encoding="utf-8") as fh:
-        fh.write(content)
+    if not save_as:
+        store.save_program(program_id, "", program_data)
 
-    return f"PATCHED: {full_path}"
-
-
-# ---------------------------------------------------------------------------
-# stage_patch
-# ---------------------------------------------------------------------------
-
-def stage_patch(file_path: str, patch_text: str, **kwargs: Any) -> str:
-    """Apply S&R patch in-memory; buffer result without writing to disk.
-
-    Reads from _patch_buffer if the file was already staged in this sprint,
-    otherwise reads from disk. Multiple stage_patch calls on the same file
-    accumulate correctly.
-
-    Returns:
-        'STAGED: {full_path}'
-    """
-    import os
-    import sys
-
-    repo_path: str = kwargs.get("repo_path", "") or ""
-    full_path = file_path if os.path.isabs(file_path) else os.path.join(repo_path, file_path)
-
-    if full_path in _patch_buffer:
-        content = _patch_buffer[full_path]
-        print(f"[STAGE] {full_path}: reading from buffer", file=sys.stderr)
-    else:
-        try:
-            with open(full_path, encoding="utf-8") as fh:
-                content = fh.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"stage_patch: file not found: {full_path!r}")
-
-    clean_patch = _strip_fences(patch_text)
-    patched = _apply_sr_blocks(content, clean_patch, full_path)
-
-    _patch_buffer[full_path] = patched
-    print(
-        f"[STAGE] {full_path}: staged ({len(_patch_buffer)} file(s) in buffer)",
-        file=sys.stderr,
+    store.save_trace(
+        trace_id=trace_id,
+        program_id=program_id,
+        status=str(trace.status),
+        steps_count=len(trace.steps) if hasattr(trace, "steps") else 0,
+        total_cost=cost,
+        trace=trace_dict,
     )
-    return f"STAGED: {full_path}"
 
-
-# ---------------------------------------------------------------------------
-# validate_staged_mypy
-# ---------------------------------------------------------------------------
-
-def validate_staged_mypy(paths: str, **kwargs: Any) -> str:
-    """Run mypy --strict against staged buffer content without touching disk.
-
-    Copies _patch_buffer files into a tmpdir overlaid on the repo, then runs
-    mypy from there. Disk is never modified. Buffer is never cleared.
-
-    Args:
-        paths: JSON string of list[str] — repo-relative paths to type-check.
-               These are the paths mypy will be invoked on (inside tmpdir).
-
-    Returns:
-        'OK' if mypy exits 0, otherwise mypy stdout (error lines).
-    """
-    import os
-    import shutil
-    import sys
-    import tempfile
-
-    repo_path: str = kwargs.get("repo_path", "") or ""
-
-    try:
-        path_list: list[str] = json.loads(paths)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"validate_staged_mypy: paths must be JSON list, got: {paths!r}"
-        ) from exc
-
-    with tempfile.TemporaryDirectory(prefix="nano_vm_mypy_") as tmpdir:
-        # 1. Copy entire repo into tmpdir so imports resolve correctly
-        if repo_path and os.path.isdir(repo_path):
-            shutil.copytree(
-                repo_path,
-                tmpdir,
-                dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+    # Record per-step transitions for transition_stats (TE-02)
+    model_id = os.getenv("NANO_VM_MCP_LLM_MODEL", "__none__") or "__none__"
+    steps = trace.steps if hasattr(trace, "steps") else []
+    if len(steps) >= 2:
+        step_ids = [s.step_id for s in steps]
+        for from_s, to_s in zip(step_ids, step_ids[1:]):
+            store.upsert_transition(
+                program_name=program.name,
+                from_step=from_s,
+                to_step=to_s,
+                model_id=model_id,
             )
 
-        # 2. Overlay staged buffer — overwrite copied files with in-memory content
-        for buf_path, buf_content in _patch_buffer.items():
-            if repo_path and buf_path.startswith(repo_path):
-                rel = os.path.relpath(buf_path, repo_path)
-            else:
-                rel = buf_path
-            dest = os.path.join(tmpdir, rel)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "w", encoding="utf-8") as fh:
-                fh.write(buf_content)
-            print(f"[MYPY-STAGE] overlaid {rel}", file=sys.stderr)
-
-        # 3. Resolve check paths relative to tmpdir
-        check_paths: list[str] = []
-        for p in path_list:
-            if os.path.isabs(p) and repo_path and p.startswith(repo_path):
-                rel = os.path.relpath(p, repo_path)
-                check_paths.append(os.path.join(tmpdir, rel))
-            elif not os.path.isabs(p):
-                check_paths.append(os.path.join(tmpdir, p))
-            else:
-                check_paths.append(p)
-
-        result = subprocess.run(
-            ["mypy", "--strict", "--ignore-missing-imports", *check_paths],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=tmpdir,
-        )
-
-    if result.returncode == 0:
-        return "OK"
-    return result.stdout or result.stderr
+    return {
+        "trace_id": trace_id,
+        "program_id": program_id,
+        "status": str(trace.status),
+        "steps": len(trace.steps) if hasattr(trace, "steps") else 0,
+        "cost": cost,
+        "error": None,
+    }
 
 
-# ---------------------------------------------------------------------------
-# commit_patches
-# ---------------------------------------------------------------------------
-
-def commit_patches(**kwargs: Any) -> str:
-    """Flush _patch_buffer to disk atomically, then clear buffer.
-
-    If any write fails, buffer is NOT cleared so the caller can retry.
-
-    Returns:
-        'COMMITTED: path1, path2, ...' or 'COMMITTED: (nothing staged)'.
+async def get_trace(store: ProgramStore, trace_id: str) -> dict[str, Any]:
     """
-    import os
-    import sys
+    Retrieve a full Trace by ID.
 
-    if not _patch_buffer:
-        print("[COMMIT] buffer empty — nothing to write", file=sys.stderr)
-        return "COMMITTED: (nothing staged)"
-
-    written: list[str] = []
-    for full_path, content in _patch_buffer.items():
-        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
-        written.append(full_path)
-        print(f"[COMMIT] wrote {full_path}", file=sys.stderr)
-
-    _patch_buffer.clear()
-    print(f"[COMMIT] done — {len(written)} file(s) written", file=sys.stderr)
-    return f"COMMITTED: {', '.join(written)}"
-
-
-# ---------------------------------------------------------------------------
-# rollback_patches
-# ---------------------------------------------------------------------------
-
-def rollback_patches(**kwargs: Any) -> str:
-    """Clear _patch_buffer without writing anything to disk.
-
-    Returns:
-        'ROLLED_BACK: path1, path2, ...' or 'ROLLED_BACK: (nothing staged)'.
+    Returns the stored Trace JSON or {"error": "not found"}.
     """
-    import sys
-
-    if not _patch_buffer:
-        print("[ROLLBACK] buffer empty — nothing to discard", file=sys.stderr)
-        return "ROLLED_BACK: (nothing staged)"
-
-    discarded = list(_patch_buffer.keys())
-    _patch_buffer.clear()
-    print(f"[ROLLBACK] discarded {len(discarded)} file(s): {discarded}", file=sys.stderr)
-    return f"ROLLED_BACK: {', '.join(discarded)}"
+    result = store.get_trace(trace_id)
+    if result is None:
+        return {"error": f"Trace '{trace_id}' not found"}
+    return result
 
 
-# ---------------------------------------------------------------------------
-# git_checkout_files  (safety net for pytest-fail post-commit)
-# ---------------------------------------------------------------------------
-
-def git_checkout_files(paths: str, **kwargs: Any) -> str:
-    """Run 'git checkout -- <paths>' to restore files to HEAD.
-
-    Called only after commit_patches() when pytest fails — restores
-    committed files back to their pre-patch state from git HEAD.
-
-    Args:
-        paths: JSON string of list[str] — repo-relative paths to restore.
-
-    Returns:
-        'RESTORED: path1, path2, ...'
+async def list_programs(store: ProgramStore) -> list[dict[str, Any]]:
     """
-    import os
-    import sys
-
-    try:
-        path_list: list[str] = json.loads(paths)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"git_checkout_files: paths must be JSON list, got: {paths!r}"
-        ) from exc
-
-    repo_path: str = kwargs.get("repo_path", "") or ""
-    cwd = repo_path if repo_path and os.path.isdir(repo_path) else None
-
-    result = subprocess.run(
-        ["git", "checkout", "--", *path_list],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=cwd,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"git_checkout_files: exit {result.returncode}:\n"
-            f"{result.stderr or result.stdout}"
-        )
-
-    print(f"[GIT] restored {path_list}", file=sys.stderr)
-    return f"RESTORED: {', '.join(path_list)}"
-
-
-# ---------------------------------------------------------------------------
-# run_mypy  (direct — runs against disk; use validate_staged_mypy pre-commit)
-# ---------------------------------------------------------------------------
-
-def run_mypy(paths: str, **kwargs: Any) -> str:
-    """Run mypy --strict on given paths (disk).
-
-    Returns:
-        'OK' if mypy exits 0, otherwise mypy stdout.
+    List all saved programs (id, name, created_at).
     """
-    try:
-        path_list: list[str] = json.loads(paths)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"run_mypy: paths must be JSON list, got: {paths!r}") from exc
-
-    result = subprocess.run(
-        ["mypy", "--strict", "--ignore-missing-imports", *path_list],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if result.returncode == 0:
-        return "OK"
-    return result.stdout or result.stderr
+    return store.list_programs()
 
 
-# ---------------------------------------------------------------------------
-# run_pytest
-# ---------------------------------------------------------------------------
-
-def run_pytest(test_file: str, **kwargs: Any) -> str:
-    """Run pytest on a single test file.
-
-    Returns:
-        'PASS' if pytest exits 0, otherwise pytest stdout.
+async def get_program(store: ProgramStore, program_id: str) -> dict[str, Any]:
     """
-    import os
-
-    repo_path: str = kwargs.get("repo_path", "") or str(os.path.dirname(test_file))
-    cwd = repo_path if os.path.isdir(repo_path) else os.path.dirname(test_file)
-
-    result = subprocess.run(
-        ["python3", "-m", "pytest", test_file, "-v", "--tb=short"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        cwd=cwd,
-    )
-    if result.returncode == 0:
-        return "PASS"
-    return result.stdout or result.stderr
-
-
-# ---------------------------------------------------------------------------
-# write_repo_files
-# ---------------------------------------------------------------------------
-
-def write_repo_files(files_json: str, **kwargs: Any) -> str:
-    """Write files to disk from JSON dict {path: content}.
-
-    Returns:
-        'WRITTEN: path1, path2, ...'
+    Retrieve a saved Program JSON by ID.
     """
-    import os
-    import sys
-
-    repo_path: str = kwargs.get("repo_path", "") or ""
-
-    print(f"[DEBUG] type={type(files_json)} len={len(files_json)}", file=sys.stderr)
-    print(f"[DEBUG] first_200={files_json[:200]!r}", file=sys.stderr)
-    print(f"[DEBUG] last_50={files_json[-50:]!r}", file=sys.stderr)
-
-    clean = _strip_fences(files_json)
-    clean = _extract_json_object(clean)
-
-    try:
-        parsed: Any = json.loads(clean)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"write_repo_files: files_json must be JSON dict, got: {clean[:120]!r}"
-        ) from exc
-
-    if isinstance(parsed, str):
-        try:
-            parsed = json.loads(parsed)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"write_repo_files: double-encoded JSON unwrap failed, got: {parsed[:120]!r}"
-            ) from exc
-
-    if not isinstance(parsed, dict):
-        raise ValueError(f"write_repo_files: expected dict, got {type(parsed).__name__}")
-
-    files: dict[str, str] = parsed
-    written: list[str] = []
-    for rel_path, content in files.items():
-        full_path = rel_path if os.path.isabs(rel_path) else os.path.join(repo_path, rel_path)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
-        written.append(full_path)
-
-    return f"WRITTEN: {', '.join(written)}"
+    result = store.get_program(program_id)
+    if result is None:
+        return {"error": f"Program '{program_id}' not found"}
+    return result
 
 
-# ---------------------------------------------------------------------------
-# notify helpers (terminal leaf steps)
-# ---------------------------------------------------------------------------
+async def delete_program(store: ProgramStore, program_id: str) -> dict[str, Any]:
+    """
+    Delete a program and its associated traces.
 
-def notify_rejected_mypy(**kwargs: Any) -> str:
-    print("REJECTED: mypy failed — patch rolled back")
-    return "REJECTED_MYPY"
-
-
-def notify_rejected_pytest(**kwargs: Any) -> str:
-    print("REJECTED: pytest failed — patch rolled back via git checkout")
-    return "REJECTED_PYTEST"
-
-
-def notify_done(**kwargs: Any) -> str:
-    print("DONE: patch committed successfully")
-    return "DONE"
+    Returns {"deleted": true} or {"error": "not found"}.
+    """
+    ok = store.delete_program(program_id)
+    if not ok:
+        return {"error": f"Program '{program_id}' not found"}
+    return {"deleted": True, "program_id": program_id}
