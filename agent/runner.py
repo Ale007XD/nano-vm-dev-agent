@@ -27,6 +27,7 @@ from nano_vm.vm import ExecutionVM
 from .programs import PROGRAM_SPRINT
 from .tools import (
     apply_search_replace_patch,
+    clear_fingerprints,
     commit_patches,
     git_checkout_files,
     notify_done,
@@ -179,6 +180,7 @@ async def run_sprint(
     Returns:
         Trace from ExecutionVM.run().
     """
+    clear_fingerprints()
     adapter, provider_name = build_adapter(llm_model, adapter_kwargs)
     print(f"[runner] provider={provider_name}")
 
