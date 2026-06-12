@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.tools import FailureFingerprint, record_fingerprint, get_seen_fingerprints
+from agent.tools import FailureFingerprint, get_seen_fingerprints, record_fingerprint
 
 
 @pytest.mark.asyncio
