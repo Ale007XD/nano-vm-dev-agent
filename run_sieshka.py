@@ -5,7 +5,6 @@ from pathlib import Path
 
 from agent.runner import run_sprint
 
-
 SPRINT_NAME = "sprint_m1_inventory_promotions"
 
 
