@@ -24,7 +24,7 @@ from nano_vm.adapters.litellm_adapter import LiteLLMAdapter
 from nano_vm.models import Program, Trace
 from nano_vm.vm import ExecutionVM
 
-from .programs import PROGRAM_SPRINT
+from .programs import build_program_sprint
 from .tools import (
     apply_search_replace_patch,
     clear_fingerprints,
@@ -201,7 +201,6 @@ async def run_sprint(
     }
 
     vm = ExecutionVM(llm=adapter, tools=tools)
-    program = Program.from_dict(PROGRAM_SPRINT)
 
     abs_repo = os.path.abspath(repo_path)
     resolved = [
@@ -212,21 +211,16 @@ async def run_sprint(
         test_file if os.path.isabs(test_file) else os.path.join(abs_repo, test_file)
     )
 
-    store_file    = os.path.join(abs_repo, "nano_vm_mcp/store.py")
-    handlers_file = os.path.join(abs_repo, "nano_vm_mcp/handlers.py")
-    tools_file    = os.path.join(abs_repo, "nano_vm_mcp/tools.py")
+    program = Program.from_dict(build_program_sprint(len(resolved)))
 
     context: dict[str, str] = {
-        "sprint_spec":   sprint_spec,
-        "target_files":  json.dumps(resolved),
-        "test_file":     test_file_resolved,
-        "repo_path":     abs_repo,
-        "store_path":    json.dumps([store_file]),
-        "handlers_path": json.dumps([handlers_file]),
-        "tools_path":    json.dumps([tools_file]),
-        "store_file":    store_file,
-        "handlers_file": handlers_file,
-        "tools_file":    tools_file,
+        "sprint_spec":  sprint_spec,
+        "target_files": json.dumps(resolved),
+        "test_file":    test_file_resolved,
+        "repo_path":    abs_repo,
     }
+    for i, path in enumerate(resolved):
+        context[f"file_{i}_paths"] = json.dumps([path])
+        context[f"file_{i}_file"] = path
 
     return await vm.run(program, context=context)

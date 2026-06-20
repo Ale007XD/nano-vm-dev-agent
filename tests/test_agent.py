@@ -30,7 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.programs import PROGRAM_SPRINT
+from agent.programs import PROGRAM_SPRINT, build_program_sprint
 from agent.tools import (
     apply_search_replace_patch,
     commit_patches,
@@ -238,15 +238,17 @@ def _build_vm(
     mypy_result: str = "OK",
     pytest_result: str = "PASS",
 ) -> tuple[Any, Any, dict[str, str]]:
-    """Build ExecutionVM + Program + context for integration tests."""
+    """Build ExecutionVM + Program + context for integration tests (3 files)."""
     from nano_vm.models import Program
     from nano_vm.vm import ExecutionVM
 
-    # Create minimal source files so read_repo_files doesn't raise
-    store    = tmp_path / "nano_vm_mcp" / "store.py"
-    handlers = tmp_path / "nano_vm_mcp" / "handlers.py"
-    tools_f  = tmp_path / "nano_vm_mcp" / "tools.py"
-    for f in (store, handlers, tools_f):
+    # Create minimal source files so read_repo_files doesn't raise.
+    # Names are arbitrary — the pipeline no longer hardcodes filenames.
+    file_a = tmp_path / "domains" / "a.py"
+    file_b = tmp_path / "domains" / "b.py"
+    file_c = tmp_path / "domains" / "c.py"
+    target_paths = [file_a, file_b, file_c]
+    for f in target_paths:
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(f"# {f.name}\nVERSION = 1\n", encoding="utf-8")
 
@@ -256,12 +258,7 @@ def _build_vm(
 
     # LLM response sequence: 3 S&R patches + 1 test file JSON
     test_json = json.dumps({str(test_f): "def test_ok():\n    assert True\n"})
-    llm_responses = [
-        _make_sr_patch(str(store)),
-        _make_sr_patch(str(handlers)),
-        _make_sr_patch(str(tools_f)),
-        test_json,
-    ]
+    llm_responses = [_make_sr_patch(str(p)) for p in target_paths] + [test_json]
 
     vm = ExecutionVM(
         llm=MockLLMAdapter(llm_responses),
@@ -281,25 +278,20 @@ def _build_vm(
             "notify_done":                lambda **kw: "DONE",
         },
     )
-    program = Program.from_dict(PROGRAM_SPRINT)
+    program = Program.from_dict(build_program_sprint(len(target_paths)))
 
-    abs_repo   = str(tmp_path)
-    store_file = str(store)
-    handlers_file = str(handlers)
-    tools_file = str(tools_f)
+    abs_repo = str(tmp_path)
+    resolved = [str(p) for p in target_paths]
 
     context: dict[str, str] = {
-        "sprint_spec":   "add field y: int = 2",
-        "target_files":  json.dumps([store_file, handlers_file, tools_file]),
-        "test_file":     str(test_f),
-        "repo_path":     abs_repo,
-        "store_path":    json.dumps([store_file]),
-        "handlers_path": json.dumps([handlers_file]),
-        "tools_path":    json.dumps([tools_file]),
-        "store_file":    store_file,
-        "handlers_file": handlers_file,
-        "tools_file":    tools_file,
+        "sprint_spec":  "add field y: int = 2",
+        "target_files": json.dumps(resolved),
+        "test_file":    str(test_f),
+        "repo_path":    abs_repo,
     }
+    for i, path in enumerate(resolved):
+        context[f"file_{i}_paths"] = json.dumps([path])
+        context[f"file_{i}_file"] = path
 
     return vm, program, context
 
@@ -355,14 +347,14 @@ async def test_da_12_llm_timeout(tmp_path: Path) -> None:
     from nano_vm.models import Program, TraceStatus
     from nano_vm.vm import ExecutionVM
 
-    store = tmp_path / "nano_vm_mcp" / "store.py"
-    store.parent.mkdir(parents=True, exist_ok=True)
-    store.write_text("# store.py\nVERSION = 1\n", encoding="utf-8")
+    target = tmp_path / "domains" / "a.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# a.py\nVERSION = 1\n", encoding="utf-8")
 
-    # Patch patch_store step with tiny timeout
-    program_dict = copy.deepcopy(PROGRAM_SPRINT)
+    # Single-file pipeline; patch tiny timeout onto its one patch step.
+    program_dict = build_program_sprint(1)
     for step in program_dict["steps"]:
-        if step["id"] == "patch_store":
+        if step["id"] == "patch_0":
             step["timeout_seconds"] = 0.05
             step["on_timeout"] = "fail"
             step.pop("on_error", None)  # disable retry so test is fast
@@ -388,17 +380,100 @@ async def test_da_12_llm_timeout(tmp_path: Path) -> None:
     program = Program.from_dict(program_dict)
     trace = await vm.run(program, context={
         "sprint_spec":   "test",
-        "target_files":  json.dumps([str(store)]),
+        "target_files":  json.dumps([str(target)]),
         "test_file":     str(tmp_path / "test_sprint.py"),
         "repo_path":     str(tmp_path),
-        "store_path":    json.dumps([str(store)]),
-        "handlers_path": json.dumps([str(store)]),
-        "tools_path":    json.dumps([str(store)]),
-        "store_file":    str(store),
-        "handlers_file": str(store),
-        "tools_file":    str(store),
+        "file_0_paths":  json.dumps([str(target)]),
+        "file_0_file":   str(target),
     })
 
     assert trace.status == TraceStatus.FAILED
     assert trace.error is not None
     assert "timed out" in trace.error
+
+
+# ---------------------------------------------------------------------------
+# Genericity tests (post-refactor) — DA-17, DA-18
+# ---------------------------------------------------------------------------
+
+def test_da_17_build_program_sprint_generic_n(tmp_path: Path) -> None:
+    """build_program_sprint(N) for N != 3 produces a valid N-file pipeline
+    that runs end-to-end. Proves the agent is no longer hardcoded to the
+    legacy store/handlers/tools (nano-vm-mcp) 3-file shape — e.g. it can
+    target Sieshka's 4 FSM domain files."""
+    import asyncio as _asyncio
+
+    from nano_vm.models import Program, TraceStatus
+    from nano_vm.vm import ExecutionVM
+
+    target_paths = [
+        tmp_path / "app" / "domains" / "inventory" / "fsm.py",
+        tmp_path / "app" / "domains" / "promotions" / "fsm.py",
+        tmp_path / "app" / "domains" / "schedule" / "fsm.py",
+        tmp_path / "app" / "domains" / "privacy" / "fsm.py",
+    ]
+    for f in target_paths:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f"# {f.name}\nVERSION = 1\n", encoding="utf-8")
+
+    test_f = tmp_path / "tests" / "unit" / "fsm" / "test_inventory_fsm.py"
+    test_f.parent.mkdir(parents=True, exist_ok=True)
+    test_f.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    test_json = json.dumps({str(test_f): "def test_ok():\n    assert True\n"})
+    llm_responses = [_make_sr_patch(str(p)) for p in target_paths] + [test_json]
+
+    vm = ExecutionVM(
+        llm=MockLLMAdapter(llm_responses),
+        tools={
+            "read_repo_files":            read_repo_files,
+            "apply_search_replace_patch": apply_search_replace_patch,
+            "stage_patch":                stage_patch,
+            "validate_staged_mypy":       lambda paths, **kw: "OK",
+            "commit_patches":             commit_patches,
+            "rollback_patches":           rollback_patches,
+            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy":                   lambda paths, **kw: "OK",
+            "run_pytest":                 lambda test_file, **kw: "PASS",
+            "write_repo_files":           write_repo_files,
+            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
+            "notify_done":                lambda **kw: "DONE",
+        },
+    )
+
+    program_dict = build_program_sprint(len(target_paths))
+    # Sanity: exactly 4 read/patch/stage triples generated, ids 0..3, no
+    # off-by-one or leftover chain link into a nonexistent 5th file.
+    all_ids = {s["id"] for s in program_dict["steps"]}
+    for i in range(4):
+        assert f"read_{i}" in all_ids
+        assert f"patch_{i}" in all_ids
+        assert f"stage_{i}" in all_ids
+    assert "read_4" not in all_ids
+    assert "patch_4" not in all_ids
+    assert "stage_4" not in all_ids
+
+    program = Program.from_dict(program_dict)
+    resolved = [str(p) for p in target_paths]
+    context: dict[str, str] = {
+        "sprint_spec":  "rename FSM field across 4 domain modules",
+        "target_files": json.dumps(resolved),
+        "test_file":    str(test_f),
+        "repo_path":    str(tmp_path),
+    }
+    for i, path in enumerate(resolved):
+        context[f"file_{i}_paths"] = json.dumps([path])
+        context[f"file_{i}_file"] = path
+
+    trace = _asyncio.run(vm.run(program, context=context))
+
+    assert trace.status == TraceStatus.SUCCESS
+    outputs = [s.output for s in trace.steps]
+    assert "DONE" in outputs
+
+
+def test_da_18_build_program_sprint_rejects_zero_files() -> None:
+    """build_program_sprint(0) raises ValueError — a sprint needs >= 1 target file."""
+    with pytest.raises(ValueError, match="num_files"):
+        build_program_sprint(0)
