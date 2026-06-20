@@ -1,7 +1,9 @@
 # run_sieshka.py
 
 import asyncio
+
 from agent.runner import run_sprint
+
 
 async def main():
     await run_sprint(
