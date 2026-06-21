@@ -25,6 +25,7 @@ from nano_vm.models import Program, Trace
 from nano_vm.vm import ExecutionVM
 
 from .programs import build_program_sprint
+from .streaming_adapter import StreamingLiteLLMAdapter
 from .tools import (
     apply_search_replace_patch,
     clear_fingerprints,
@@ -152,8 +153,22 @@ def build_adapter(
     if api_base and provider_name not in ("anthropic",):
         kwargs["api_base"] = api_base
 
-    adapter = LiteLLMAdapter(model, **kwargs)
-    return cast(LLMAdapter, adapter), provider_name
+    # LiteLLMAdapter.complete() (nano_vm core) does response.choices[0]...
+    # unconditionally — correct for stream=False, but litellm.acompletion()
+    # returns a CustomStreamWrapper (no .choices) when stream=True, raising
+    # AttributeError. Vibecode's stream=True is not optional (proxy enforces
+    # a ~100s non-streaming timeout — see streaming_adapter.py docstring),
+    # so route through StreamingLiteLLMAdapter, which consumes the stream
+    # correctly, instead of disabling streaming.
+    wants_stream = bool(kwargs.pop("stream", False))
+    if wants_stream:
+        adapter: LLMAdapter = cast(
+            LLMAdapter, StreamingLiteLLMAdapter(model, **kwargs)
+        )
+    else:
+        adapter = cast(LLMAdapter, LiteLLMAdapter(model, **kwargs))
+
+    return adapter, provider_name
 
 
 async def run_sprint(
