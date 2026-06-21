@@ -17,6 +17,10 @@ DA4-11  validate_staged_mypy: returns error output on bad Python
 DA4-12  git_checkout_files: ValueError on non-JSON paths
 DA4-13  full happy-path: stage → validate_staged_mypy → commit → disk has new content
 DA4-14  full fail-path: stage → validate_staged_mypy fail → rollback → disk unchanged
+DA4-15  git_checkout_files: tracked file restored via 'git checkout'
+DA4-16  git_checkout_files: untracked (new) file removed, not checked out
+DA4-17  git_checkout_files: mixed tracked+untracked in one call — both handled
+DA4-18  stage_new_file: buffers full content, disk untouched, no SEARCH/REPLACE needed
 """
 
 from __future__ import annotations
@@ -286,3 +290,138 @@ def test_da4_14_fail_path_rollback(tmp_path: os.PathLike[str]) -> None:
     tools.rollback_patches()
     assert tools._patch_buffer == {}
     assert f.read_text(encoding="utf-8") == "x: int = 1\n"
+
+
+# ---------------------------------------------------------------------------
+# Helper: minimal git repo with one committed file
+# ---------------------------------------------------------------------------
+
+def _init_git_repo(repo_path: os.PathLike[str]) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo_path, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_path, check=True)
+
+
+# ---------------------------------------------------------------------------
+# DA4-15  git_checkout_files: tracked file restored via 'git checkout'
+# ---------------------------------------------------------------------------
+
+def test_da4_15_git_checkout_tracked_file_restored(tmp_path: os.PathLike[str]) -> None:
+    import subprocess
+
+    tools = _reload_tools()
+    _init_git_repo(tmp_path)
+
+    tracked = tmp_path / "existing.py"  # type: ignore[operator]
+    tracked.write_text("VERSION = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "existing.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+
+    # Simulate a committed-then-rejected patch: mutate the file on disk.
+    tracked.write_text("VERSION = 2  # bad patch\n", encoding="utf-8")
+
+    result = tools.git_checkout_files(
+        json.dumps(["existing.py"]), repo_path=str(tmp_path)
+    )
+
+    assert "RESTORED: existing.py" in result
+    assert "REMOVED" not in result
+    assert tracked.read_text(encoding="utf-8") == "VERSION = 1\n"
+
+
+# ---------------------------------------------------------------------------
+# DA4-16  git_checkout_files: untracked (new) file removed, not checked out
+# ---------------------------------------------------------------------------
+
+def test_da4_16_git_checkout_untracked_file_removed(tmp_path: os.PathLike[str]) -> None:
+    tools = _reload_tools()
+    _init_git_repo(tmp_path)
+    # repo has no commits at all yet — file is untracked by construction
+
+    new_file = tmp_path / "brand_new.py"  # type: ignore[operator]
+    new_file.write_text("VERSION = 1  # created this sprint, never committed\n", encoding="utf-8")
+
+    result = tools.git_checkout_files(
+        json.dumps(["brand_new.py"]), repo_path=str(tmp_path)
+    )
+
+    assert "REMOVED: brand_new.py" in result
+    assert "RESTORED" not in result
+    assert not new_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# DA4-17  git_checkout_files: mixed tracked+untracked in one call
+# ---------------------------------------------------------------------------
+
+def test_da4_17_git_checkout_mixed_tracked_and_untracked(
+    tmp_path: os.PathLike[str],
+) -> None:
+    import subprocess
+
+    tools = _reload_tools()
+    _init_git_repo(tmp_path)
+
+    tracked = tmp_path / "existing.py"  # type: ignore[operator]
+    tracked.write_text("VERSION = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "existing.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    tracked.write_text("VERSION = 2  # bad patch\n", encoding="utf-8")
+
+    new_file = tmp_path / "brand_new.py"  # type: ignore[operator]
+    new_file.write_text("VERSION = 1  # created this sprint\n", encoding="utf-8")
+
+    result = tools.git_checkout_files(
+        json.dumps(["existing.py", "brand_new.py"]), repo_path=str(tmp_path)
+    )
+
+    assert "RESTORED: existing.py" in result
+    assert "REMOVED: brand_new.py" in result
+    assert tracked.read_text(encoding="utf-8") == "VERSION = 1\n"
+    assert not new_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# DA4-18  stage_new_file: buffers full content, no SEARCH/REPLACE needed
+# ---------------------------------------------------------------------------
+
+def test_da4_18_stage_new_file_buffers_full_content(tmp_path: os.PathLike[str]) -> None:
+    tools = _reload_tools()
+
+    new_path = tmp_path / "domains" / "inventory" / "fsm.py"  # type: ignore[operator]
+    # File does not exist on disk — stage_new_file must not require it to.
+    assert not os.path.exists(str(new_path))
+
+    content = (
+        "from __future__ import annotations\n\n"
+        "class InventoryFSM:\n"
+        "    pass\n"
+    )
+    result = tools.stage_new_file(str(new_path), content, repo_path=str(tmp_path))
+
+    assert result == f"STAGED_NEW: {new_path}"
+    # _strip_fences() applies .strip() — trailing newline normalization is
+    # expected (same behavior as stage_patch's clean_patch path), not a bug.
+    assert tools._patch_buffer[str(new_path)] == content.strip()
+    # Disk untouched until commit_patches() — same transactional guarantee
+    # as stage_patch().
+    assert not os.path.exists(str(new_path))
+
+
+def test_da4_18b_stage_new_file_strips_markdown_fences(tmp_path: os.PathLike[str]) -> None:
+    """LLM sometimes wraps raw content in ```python fences despite instructions
+    not to — stage_new_file must strip them, same discipline as stage_patch."""
+    tools = _reload_tools()
+
+    new_path = tmp_path / "domains" / "promotions" / "fsm.py"  # type: ignore[operator]
+    fenced = "```python\nclass PromotionFSM:\n    pass\n```"
+
+    tools.stage_new_file(str(new_path), fenced, repo_path=str(tmp_path))
+
+    buffered = tools._patch_buffer[str(new_path)]
+    assert "```" not in buffered
+    assert "class PromotionFSM" in buffered

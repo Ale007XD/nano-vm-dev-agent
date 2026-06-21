@@ -17,11 +17,15 @@ DA-13  apply_search_replace_patch: single block → file patched correctly
 DA-14  apply_search_replace_patch: multiple blocks → all applied sequentially
 DA-15  apply_search_replace_patch: SEARCH not found → ValueError
 DA-16  apply_search_replace_patch: SEARCH matches >1 times → ValueError
+DA-19  build_program_sprint(is_new=[True]): new-file chain has no read_0 step
+DA-20  new-file sprint E2E: single new file, full-content patch, no S&R → trace.SUCCESS
+DA-21  mixed sprint E2E: file_0 existing (S&R) + file_1 new (full-content) → trace.SUCCESS
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -29,7 +33,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.programs import build_program_sprint
+from agent.programs import PROGRAM_SPRINT, build_program_sprint
 from agent.tools import (
     apply_search_replace_patch,
     commit_patches,
@@ -37,6 +41,7 @@ from agent.tools import (
     rollback_patches,
     run_mypy,
     run_pytest,
+    stage_new_file,
     stage_patch,
     write_repo_files,
 )
@@ -476,3 +481,162 @@ def test_da_18_build_program_sprint_rejects_zero_files() -> None:
     """build_program_sprint(0) raises ValueError — a sprint needs >= 1 target file."""
     with pytest.raises(ValueError, match="num_files"):
         build_program_sprint(0)
+
+
+# ---------------------------------------------------------------------------
+# New-file creation tests (post-2026-06-20 refactor) — DA-19, DA-20, DA-21
+# ---------------------------------------------------------------------------
+
+def test_da_19_build_program_sprint_new_file_has_no_read_step() -> None:
+    """A file flagged is_new=True must not get a read_{i} step — there is
+    nothing on disk to read yet. Its chain is patch_{i} -> stage_{i} only,
+    and stage_{i} must call stage_new_file, not stage_patch."""
+    program_dict = build_program_sprint([True])
+
+    ids = [s["id"] for s in program_dict["steps"]]
+    assert "read_0" not in ids
+    assert "patch_0" in ids
+    assert "stage_0" in ids
+
+    stage_step = next(s for s in program_dict["steps"] if s["id"] == "stage_0")
+    assert stage_step["tool"] == "stage_new_file"
+    assert stage_step["args"] == {
+        "file_path": "$file_0_file",
+        "content": "$file_0_patch",
+    }
+
+    patch_step = next(s for s in program_dict["steps"] if s["id"] == "patch_0")
+    assert "$read_0.output" not in patch_step["prompt"]
+    assert "$file_0_file" in patch_step["prompt"]
+
+
+def test_da_20_new_file_sprint_e2e(tmp_path: Path) -> None:
+    """Single brand-new target file (no S&R, full-content patch) runs the
+    full DA-4 pipeline end to end: patch -> stage_new_file -> generate_test
+    -> mypy -> commit -> pytest -> notify_done. Mirrors
+    sprint_m1_inventory_promotions's InventoryFSM module creation."""
+    from nano_vm.models import Program, TraceStatus
+    from nano_vm.vm import ExecutionVM
+
+    target = tmp_path / "app" / "domains" / "inventory" / "fsm.py"
+    assert not target.exists()  # genuinely new — nothing pre-staged on disk
+
+    test_f = tmp_path / "tests" / "unit" / "fsm" / "test_inventory_fsm.py"
+    test_f.parent.mkdir(parents=True, exist_ok=True)
+    test_f.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    new_file_content = (
+        "from __future__ import annotations\n\n"
+        "class InventoryFSM:\n"
+        "    pass\n"
+    )
+    test_json = json.dumps({str(test_f): "def test_ok():\n    assert True\n"})
+    llm_responses = [new_file_content, test_json]
+
+    vm = ExecutionVM(
+        llm=MockLLMAdapter(llm_responses),
+        tools={
+            "read_repo_files":            read_repo_files,
+            "apply_search_replace_patch": apply_search_replace_patch,
+            "stage_patch":                stage_patch,
+            "stage_new_file":             stage_new_file,
+            "validate_staged_mypy":       lambda paths, **kw: "OK",
+            "commit_patches":             commit_patches,
+            "rollback_patches":           rollback_patches,
+            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy":                   lambda paths, **kw: "OK",
+            "run_pytest":                 lambda test_file, **kw: "PASS",
+            "write_repo_files":           write_repo_files,
+            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
+            "notify_done":                lambda **kw: "DONE",
+        },
+    )
+
+    program_dict = build_program_sprint([True])
+    program = Program.from_dict(program_dict)
+
+    context: dict[str, str] = {
+        "sprint_spec":  "create InventoryFSM (AVAILABLE→LOW_STOCK→CRITICAL→OUT_OF_STOCK)",
+        "target_files": json.dumps([str(target)]),
+        "test_file":    str(test_f),
+        "repo_path":    str(tmp_path),
+        "file_0_file":  str(target),
+        # deliberately NO file_0_paths — new files never read from disk
+    }
+
+    trace = asyncio.run(vm.run(program, context=context))
+
+    assert trace.status == TraceStatus.SUCCESS
+    outputs = [s.output for s in trace.steps]
+    assert "DONE" in outputs
+    step_ids = [s.step_id for s in trace.steps]
+    assert "read_0" not in step_ids
+
+
+def test_da_21_mixed_existing_and_new_file_sprint_e2e(tmp_path: Path) -> None:
+    """One existing file (patched via S&R) + one brand-new file (full content)
+    in the same sprint — both chains coexist and both feed into the same
+    mypy/commit/pytest tail."""
+    from nano_vm.models import Program, TraceStatus
+    from nano_vm.vm import ExecutionVM
+
+    existing = tmp_path / "app" / "domains" / "orders" / "fsm.py"
+    existing.parent.mkdir(parents=True, exist_ok=True)
+    existing.write_text("# orders fsm\nVERSION = 1\n", encoding="utf-8")
+
+    new_file = tmp_path / "app" / "domains" / "inventory" / "fsm.py"
+    assert not new_file.exists()
+
+    test_f = tmp_path / "tests" / "test_mixed.py"
+    test_f.parent.mkdir(parents=True, exist_ok=True)
+    test_f.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    sr_patch_for_existing = _make_sr_patch(str(existing))
+    new_file_content = "class InventoryFSM:\n    pass\n"
+    test_json = json.dumps({str(test_f): "def test_ok():\n    assert True\n"})
+    llm_responses = [sr_patch_for_existing, new_file_content, test_json]
+
+    vm = ExecutionVM(
+        llm=MockLLMAdapter(llm_responses),
+        tools={
+            "read_repo_files":            read_repo_files,
+            "apply_search_replace_patch": apply_search_replace_patch,
+            "stage_patch":                stage_patch,
+            "stage_new_file":             stage_new_file,
+            "validate_staged_mypy":       lambda paths, **kw: "OK",
+            "commit_patches":             commit_patches,
+            "rollback_patches":           rollback_patches,
+            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy":                   lambda paths, **kw: "OK",
+            "run_pytest":                 lambda test_file, **kw: "PASS",
+            "write_repo_files":           write_repo_files,
+            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
+            "notify_done":                lambda **kw: "DONE",
+        },
+    )
+
+    is_new_flags = [False, True]  # file_0 = existing, file_1 = new
+    program = Program.from_dict(build_program_sprint(is_new_flags))
+
+    resolved = [str(existing), str(new_file)]
+    context: dict[str, str] = {
+        "sprint_spec":  "patch orders FSM + create inventory FSM",
+        "target_files": json.dumps(resolved),
+        "test_file":    str(test_f),
+        "repo_path":    str(tmp_path),
+        "file_0_file":  str(existing),
+        "file_0_paths": json.dumps([str(existing)]),
+        "file_1_file":  str(new_file),
+        # no file_1_paths — file_1 is new, never read from disk
+    }
+
+    trace = asyncio.run(vm.run(program, context=context))
+
+    assert trace.status == TraceStatus.SUCCESS
+    step_ids = [s.step_id for s in trace.steps]
+    assert "read_0" in step_ids   # existing file was read
+    assert "read_1" not in step_ids  # new file was never read
+    assert "patch_0" in step_ids
+    assert "patch_1" in step_ids
