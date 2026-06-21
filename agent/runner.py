@@ -37,6 +37,7 @@ from .tools import (
     rollback_patches,
     run_mypy,
     run_pytest,
+    stage_new_file,
     stage_patch,
     validate_staged_mypy,
     write_repo_files,
@@ -188,6 +189,7 @@ async def run_sprint(
         "read_repo_files":            read_repo_files,
         "apply_search_replace_patch": apply_search_replace_patch,
         "stage_patch":                stage_patch,
+        "stage_new_file":             stage_new_file,
         "validate_staged_mypy":       validate_staged_mypy,
         "commit_patches":             commit_patches,
         "rollback_patches":           rollback_patches,
@@ -211,7 +213,18 @@ async def run_sprint(
         test_file if os.path.isabs(test_file) else os.path.join(abs_repo, test_file)
     )
 
-    program = Program.from_dict(build_program_sprint(len(resolved)))
+    # A target file that doesn't exist on disk yet is being created from
+    # scratch this sprint, not patched — see build_program_sprint() docstring
+    # and DECISIONS.md 2026-06-20 (sprint_m1_inventory_promotions: new FSM
+    # modules had no prior content for stage_patch's S&R diff to apply to).
+    is_new_flags = [not os.path.isfile(p) for p in resolved]
+    if any(is_new_flags):
+        print(
+            f"[runner] new files (no S&R, full-content generation): "
+            f"{[p for p, n in zip(resolved, is_new_flags) if n]}"
+        )
+
+    program = Program.from_dict(build_program_sprint(is_new_flags))
 
     context: dict[str, str] = {
         "sprint_spec":  sprint_spec,
@@ -219,8 +232,9 @@ async def run_sprint(
         "test_file":    test_file_resolved,
         "repo_path":    abs_repo,
     }
-    for i, path in enumerate(resolved):
-        context[f"file_{i}_paths"] = json.dumps([path])
+    for i, (path, is_new) in enumerate(zip(resolved, is_new_flags)):
         context[f"file_{i}_file"] = path
+        if not is_new:
+            context[f"file_{i}_paths"] = json.dumps([path])
 
     return await vm.run(program, context=context)

@@ -248,6 +248,45 @@ def stage_patch(file_path: str, patch_text: str, **kwargs: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# stage_new_file — for target files that do not exist on disk yet
+# ---------------------------------------------------------------------------
+
+def stage_new_file(file_path: str, content: str, **kwargs: Any) -> str:
+    """Buffer the full content of a brand-new file (no diffing).
+
+    stage_patch() requires existing content to apply a Search&Replace
+    block against. For sprints that create files from scratch (e.g.
+    sprint_m1_inventory_promotions's new FSM modules), there is nothing
+    to diff against — the LLM emits the complete file body directly.
+
+    This intentionally does NOT check os.path.exists(): a file already
+    staged earlier in the same sprint (e.g. via stage_patch) takes the
+    buffer as the source of truth either way. Validation that the file
+    is genuinely new (not silently clobbering an existing one) happens
+    at program-build time in build_program_sprint() / runner.py, which
+    decides whether to route a given target file through the
+    read->patch[S&R]->stage_patch chain or the patch[full]->stage_new_file
+    chain based on os.path.exists() at sprint start.
+
+    Returns:
+        'STAGED_NEW: {full_path}'
+    """
+    import os
+    import sys
+
+    repo_path: str = kwargs.get("repo_path", "") or ""
+    full_path = file_path if os.path.isabs(file_path) else os.path.join(repo_path, file_path)
+
+    clean_content = _strip_fences(content)
+    _patch_buffer[full_path] = clean_content
+    print(
+        f"[STAGE-NEW] {full_path}: staged ({len(_patch_buffer)} file(s) in buffer)",
+        file=sys.stderr,
+    )
+    return f"STAGED_NEW: {full_path}"
+
+
+# ---------------------------------------------------------------------------
 # validate_staged_mypy
 # ---------------------------------------------------------------------------
 
@@ -383,16 +422,23 @@ def rollback_patches(**kwargs: Any) -> str:
 # ---------------------------------------------------------------------------
 
 def git_checkout_files(paths: str, **kwargs: Any) -> str:
-    """Run 'git checkout -- <paths>' to restore files to HEAD.
+    """Restore files to their pre-patch state after a post-commit pytest failure.
 
-    Called only after commit_patches() when pytest fails — restores
-    committed files back to their pre-patch state from git HEAD.
+    Tracked files (existed in git HEAD before this sprint's commit) are
+    restored via 'git checkout -- <path>'. Untracked files (created by
+    this sprint — e.g. new FSM modules with no prior git history) cannot
+    be checked out; 'git checkout' rejects untracked paths with
+    'pathspec did not match any file(s) known to git'. Those are instead
+    removed directly, since "restore to pre-sprint state" for a file that
+    didn't exist pre-sprint means "make it not exist again".
 
     Args:
-        paths: JSON string of list[str] — repo-relative paths to restore.
+        paths: JSON string of list[str] — repo-relative or absolute paths
+               to restore.
 
     Returns:
-        'RESTORED: path1, path2, ...'
+        'RESTORED: <checked-out paths> | REMOVED: <untracked paths>'
+        (either segment omitted if empty).
     """
     import os
     import sys
@@ -407,21 +453,45 @@ def git_checkout_files(paths: str, **kwargs: Any) -> str:
     repo_path: str = kwargs.get("repo_path", "") or ""
     cwd = repo_path if repo_path and os.path.isdir(repo_path) else None
 
-    result = subprocess.run(
-        ["git", "checkout", "--", *path_list],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=cwd,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"git_checkout_files: exit {result.returncode}:\n"
-            f"{result.stderr or result.stdout}"
+    tracked: list[str] = []
+    untracked: list[str] = []
+    for p in path_list:
+        check = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", p],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=cwd,
         )
+        (tracked if check.returncode == 0 else untracked).append(p)
 
-    print(f"[GIT] restored {path_list}", file=sys.stderr)
-    return f"RESTORED: {', '.join(path_list)}"
+    if tracked:
+        result = subprocess.run(
+            ["git", "checkout", "--", *tracked],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=cwd,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git_checkout_files: exit {result.returncode}:\n"
+                f"{result.stderr or result.stdout}"
+            )
+        print(f"[GIT] restored (tracked) {tracked}", file=sys.stderr)
+
+    for p in untracked:
+        full_path = p if os.path.isabs(p) else os.path.join(cwd or "", p)
+        if os.path.exists(full_path):
+            os.remove(full_path)
+        print(f"[GIT] removed (untracked, new-file rollback) {p}", file=sys.stderr)
+
+    parts = []
+    if tracked:
+        parts.append(f"RESTORED: {', '.join(tracked)}")
+    if untracked:
+        parts.append(f"REMOVED: {', '.join(untracked)}")
+    return " | ".join(parts) if parts else "RESTORED: (nothing to restore)"
 
 
 # ---------------------------------------------------------------------------

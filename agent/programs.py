@@ -54,6 +54,23 @@ _PATCH_PROMPT_TEMPLATE = (
     "Multiple blocks are allowed. No other text."
 )
 
+_CREATE_PROMPT_TEMPLATE = (
+    "You are an expert Python developer.\n\n"
+    "## Sprint specification\n$sprint_spec\n\n"
+    "## New file to create: $file_{i}_file\n\n"
+    "This file does not exist yet — there is nothing to diff against.\n\n"
+    "## Task\n"
+    "Write the COMPLETE content of this new file from scratch, satisfying "
+    "the specification above.\n\n"
+    "Rules:\n"
+    "- Output ONLY the raw file content — no explanation, no markdown fences.\n"
+    "- File must be syntactically complete and importable on its own.\n"
+    "- mypy --strict must pass (0 errors).\n"
+    "- Include 'from __future__ import annotations' if the spec implies "
+    "modern type hints.\n\n"
+    "Output the file content now — nothing else."
+)
+
 _TAIL_STEPS: list[dict[str, Any]] = [
     {
         "id": "generate_test",
@@ -153,7 +170,54 @@ _TAIL_STEPS: list[dict[str, Any]] = [
 ]
 
 
-def _file_steps(index: int, next_after: str) -> list[dict[str, Any]]:
+def _file_steps(index: int, next_after: str, is_new: bool) -> list[dict[str, Any]]:
+    """Build the step chain for the target file at `index`.
+
+    Two shapes, chosen by `is_new`:
+      existing file: read_{i} -> patch_{i}[S&R, llm] -> stage_{i}[stage_patch]
+      new file:                  patch_{i}[full-content, llm] -> stage_{i}[stage_new_file]
+
+    A brand-new file has no prior content to diff against, so there is no
+    read step and no Search&Replace — the LLM emits the complete file body
+    and stage_new_file() buffers it directly (DECISIONS.md 2026-06-20:
+    sprint_m1_inventory_promotions — dev-agent's S&R pipeline assumed every
+    target file pre-exists; new-file creation is a distinct mechanism, not
+    a variant of patching).
+
+    Args:
+        index:      0-based position of this file in target_files.
+        next_after: step id to jump to after staging — the next file's
+                    first step (read_{i+1} or patch_{i+1} depending on
+                    *its* is_new flag), or 'generate_test' for the last file.
+        is_new:     True if this target file does not exist on disk yet.
+    """
+    if is_new:
+        prompt = _CREATE_PROMPT_TEMPLATE.format(i=index)
+        return [
+            {
+                "id": f"patch_{index}",
+                "type": "llm",
+                "prompt": prompt,
+                "output_key": f"file_{index}_patch",
+                "on_error": "retry",
+                "max_retries": 2,
+                "timeout_seconds": 120,
+                "on_timeout": "fail",
+            },
+            {
+                "id": f"stage_{index}",
+                "type": "tool",
+                "tool": "stage_new_file",
+                "args": {
+                    "file_path": f"$file_{index}_file",
+                    "content": f"$file_{index}_patch",
+                },
+                "on_error": "retry",
+                "max_retries": 2,
+                "next_step": next_after,
+            },
+        ]
+
     prompt = _PATCH_PROMPT_TEMPLATE.format(i=index)
     return [
         {
@@ -187,14 +251,50 @@ def _file_steps(index: int, next_after: str) -> list[dict[str, Any]]:
     ]
 
 
-def build_program_sprint(num_files: int) -> dict[str, Any]:
-    if num_files < 1:
-        raise ValueError("build_program_sprint: num_files must be >= 1")
+def _first_step_id(index: int, is_new_flags: list[bool]) -> str:
+    """First step id for target file `index`, depending on its is_new flag."""
+    return f"patch_{index}" if is_new_flags[index] else f"read_{index}"
 
+
+def build_program_sprint(num_files: int | list[bool]) -> dict[str, Any]:
+    """Build the sprint FSM program for an arbitrary number of target files.
+
+    Generates one (read->patch[S&R]->stage) or (patch[full]->stage_new)
+    chain per target file — existing vs new, respectively — then continues
+    into the shared generate_test -> validate_mypy -> commit/rollback ->
+    run_tests -> pytest_guard tail (DA-4, unchanged).
+
+    Required context variables (in addition to the shared ones consumed
+    by the tail — sprint_spec, target_files, test_file, repo_path):
+
+        file_{i}_file  : str            — plain path, for stage + prompt label
+        file_{i}_paths : JSON list[str] — for read_repo_files, EXISTING
+                         files only (new files skip the read step entirely)
+
+    Args:
+        num_files: either a plain int (back-compat — all files treated as
+                   existing, legacy 3-file shape if called with 3), or a
+                   list[bool] of per-file is_new flags (preferred — caller
+                   should compute these from os.path.exists() at sprint
+                   start, see agent/runner.py).
+
+    Raises:
+        ValueError: if num_files (or len(is_new_flags)) < 1.
+    """
+    if isinstance(num_files, int):
+        if num_files < 1:
+            raise ValueError("build_program_sprint: num_files must be >= 1")
+        is_new_flags: list[bool] = [False] * num_files
+    else:
+        is_new_flags = list(num_files)
+        if len(is_new_flags) < 1:
+            raise ValueError("build_program_sprint: num_files must be >= 1")
+
+    n = len(is_new_flags)
     steps: list[dict[str, Any]] = []
-    for i in range(num_files):
-        next_after = f"read_{i + 1}" if i + 1 < num_files else "generate_test"
-        steps.extend(_file_steps(i, next_after))
+    for i in range(n):
+        next_after = _first_step_id(i + 1, is_new_flags) if i + 1 < n else "generate_test"
+        steps.extend(_file_steps(i, next_after, is_new_flags[i]))
     steps.extend(_TAIL_STEPS)
 
     return {"name": "sprint_execution", "steps": steps}
