@@ -25,7 +25,6 @@ DA-21  mixed sprint E2E: file_0 existing (S&R) + file_1 new (full-content) → t
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -33,7 +32,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.programs import PROGRAM_SPRINT, build_program_sprint
+from agent.programs import build_program_sprint
 from agent.tools import (
     apply_search_replace_patch,
     commit_patches,
