@@ -25,6 +25,7 @@ DA-21  mixed sprint E2E: file_0 existing (S&R) + file_1 new (full-content) → t
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -32,11 +33,12 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.programs import build_program_sprint
+from agent.programs import PROGRAM_SPRINT, build_program_sprint
 from agent.tools import (
     apply_search_replace_patch,
     commit_patches,
     read_repo_files,
+    read_staged_files,
     rollback_patches,
     run_mypy,
     run_pytest,
@@ -267,6 +269,7 @@ def _build_vm(
         llm=MockLLMAdapter(llm_responses),
         tools={
             "read_repo_files":            read_repo_files,
+            "read_staged_files":          read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
             "stage_patch":                stage_patch,
             "validate_staged_mypy":       lambda paths, **kw: mypy_result,
@@ -366,6 +369,7 @@ async def test_da_12_llm_timeout(tmp_path: Path) -> None:
         llm=SlowLLMAdapter(),
         tools={
             "read_repo_files":            read_repo_files,
+            "read_staged_files":          read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
             "stage_patch":                stage_patch,
             "validate_staged_mypy":       lambda paths, **kw: "OK",
@@ -430,6 +434,7 @@ def test_da_17_build_program_sprint_generic_n(tmp_path: Path) -> None:
         llm=MockLLMAdapter(llm_responses),
         tools={
             "read_repo_files":            read_repo_files,
+            "read_staged_files":          read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
             "stage_patch":                stage_patch,
             "validate_staged_mypy":       lambda paths, **kw: "OK",
@@ -536,6 +541,7 @@ def test_da_20_new_file_sprint_e2e(tmp_path: Path) -> None:
         llm=MockLLMAdapter(llm_responses),
         tools={
             "read_repo_files":            read_repo_files,
+            "read_staged_files":          read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
             "stage_patch":                stage_patch,
             "stage_new_file":             stage_new_file,
@@ -600,6 +606,7 @@ def test_da_21_mixed_existing_and_new_file_sprint_e2e(tmp_path: Path) -> None:
         llm=MockLLMAdapter(llm_responses),
         tools={
             "read_repo_files":            read_repo_files,
+            "read_staged_files":          read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
             "stage_patch":                stage_patch,
             "stage_new_file":             stage_new_file,
@@ -727,6 +734,7 @@ def test_da_31_reference_files_e2e_inventory_fsm_sprint(tmp_path: Path) -> None:
         llm=MockLLMAdapter(llm_responses),
         tools={
             "read_repo_files":            read_repo_files,
+            "read_staged_files":          read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
             "stage_patch":                stage_patch,
             "stage_new_file":             stage_new_file,
@@ -763,3 +771,128 @@ def test_da_31_reference_files_e2e_inventory_fsm_sprint(tmp_path: Path) -> None:
     assert step_ids.index("read_references") < step_ids.index("patch_0")
     ref_step_result = next(s for s in trace.steps if s.step_id == "read_references")
     assert "class BaseFSM" in ref_step_result.output
+
+
+# ---------------------------------------------------------------------------
+# read_staged_files / generate_test context tests — DA-32..34
+# ---------------------------------------------------------------------------
+
+def test_da_32_build_program_sprint_inserts_read_staged_before_test() -> None:
+    """read_staged must run after the last file's stage step and before
+    generate_test, regardless of file count or is_new mix."""
+    program_dict = build_program_sprint([False, True])
+    steps_by_id = {s["id"]: s for s in program_dict["steps"]}
+
+    assert "read_staged" in steps_by_id
+    assert steps_by_id["read_staged"]["tool"] == "read_staged_files"
+    assert steps_by_id["read_staged"]["args"] == {"paths": "$target_files"}
+    assert steps_by_id["read_staged"]["next_step"] == "generate_test"
+    # the last file's stage step chains into read_staged, not generate_test directly
+    assert steps_by_id["stage_1"]["next_step"] == "read_staged"
+
+    generate_test_prompt = steps_by_id["generate_test"]["prompt"]
+    assert "$read_staged.output" in generate_test_prompt
+    assert "do not invent methods" in generate_test_prompt
+
+
+def test_da_33_read_staged_files_prefers_buffer_over_disk(tmp_path: Path) -> None:
+    """read_staged_files must return the STAGED (buffered) content, not the
+    on-disk content, when a file has been staged this sprint but not yet
+    committed — this is the entire point of the tool."""
+    import agent.tools as tools_module
+
+    target = tmp_path / "fsm.py"
+    target.write_text("OLD_DISK_CONTENT = True\n", encoding="utf-8")
+
+    tools_module._patch_buffer[str(target)] = "NEW_STAGED_CONTENT = True\n"
+    try:
+        result = read_staged_files(json.dumps([str(target)]), repo_path=str(tmp_path))
+    finally:
+        tools_module._patch_buffer.clear()
+
+    assert "NEW_STAGED_CONTENT" in result
+    assert "OLD_DISK_CONTENT" not in result
+
+
+def test_da_34_read_staged_files_falls_back_to_disk_when_unstaged(tmp_path: Path) -> None:
+    """A target file not touched by any patch/stage step this sprint (e.g.
+    out of scope for this particular sprint) still reads correctly from disk."""
+    target = tmp_path / "untouched.py"
+    target.write_text("UNTOUCHED = True\n", encoding="utf-8")
+
+    result = read_staged_files(json.dumps([str(target)]), repo_path=str(tmp_path))
+
+    assert "UNTOUCHED" in result
+
+
+def test_da_35_generate_test_e2e_sees_real_staged_signature(tmp_path: Path) -> None:
+    """E2E repro of the actual failure mode (DECISIONS.md 2026-06-22):
+    generate_test must receive the REAL staged FSM content (sync,
+    state_reader/state_writer constructor) so the test it writes matches
+    the real API instead of a hallucinated async/db_path shape."""
+    from nano_vm.models import Program, TraceStatus
+    from nano_vm.vm import ExecutionVM
+
+    new_file = tmp_path / "app" / "domains" / "inventory" / "fsm.py"
+    test_f = tmp_path / "tests" / "test_inventory_fsm.py"
+    test_f.parent.mkdir(parents=True, exist_ok=True)
+    test_f.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    real_fsm_content = (
+        "class InventoryFSM:\n"
+        "    def __init__(self, state_reader, state_writer):\n"
+        "        self._read = state_reader\n"
+        "        self._write = state_writer\n"
+    )
+
+    captured_prompts: list[str] = []
+
+    class _CapturingAdapter:
+        def __init__(self, responses: list[str]) -> None:
+            self._responses = list(responses)
+
+        async def complete(self, messages: list[dict[str, str]]) -> str:
+            captured_prompts.append(messages[-1]["content"])
+            return self._responses.pop(0)
+
+    test_json = json.dumps({str(test_f): "def test_ok():\n    assert True\n"})
+    adapter = _CapturingAdapter([real_fsm_content, test_json])
+
+    vm = ExecutionVM(
+        llm=adapter,
+        tools={
+            "read_repo_files":            read_repo_files,
+            "read_staged_files":          read_staged_files,
+            "apply_search_replace_patch": apply_search_replace_patch,
+            "stage_patch":                stage_patch,
+            "stage_new_file":             stage_new_file,
+            "validate_staged_mypy":       lambda paths, **kw: "OK",
+            "commit_patches":             commit_patches,
+            "rollback_patches":           rollback_patches,
+            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy":                   lambda paths, **kw: "OK",
+            "run_pytest":                 lambda test_file, **kw: "PASS",
+            "write_repo_files":           write_repo_files,
+            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
+            "notify_done":                lambda **kw: "DONE",
+        },
+    )
+
+    program = Program.from_dict(build_program_sprint([True]))
+    context: dict[str, str] = {
+        "sprint_spec":  "create InventoryFSM",
+        "target_files": json.dumps([str(new_file)]),
+        "test_file":    str(test_f),
+        "repo_path":    str(tmp_path),
+        "file_0_file":  str(new_file),
+    }
+
+    trace = asyncio.run(vm.run(program, context=context))
+
+    assert trace.status == TraceStatus.SUCCESS
+    # the generate_test prompt (2nd LLM call) must contain the REAL staged
+    # constructor shape, not just the sprint_spec text
+    generate_test_prompt = captured_prompts[1]
+    assert "state_reader" in generate_test_prompt
+    assert "state_writer" in generate_test_prompt
