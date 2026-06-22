@@ -35,6 +35,7 @@ from .tools import (
     notify_rejected_mypy,
     notify_rejected_pytest,
     read_repo_files,
+    read_staged_files,
     rollback_patches,
     run_mypy,
     run_pytest,
@@ -210,6 +211,7 @@ async def run_sprint(
 
     tools: dict[str, Callable[..., Any]] = {
         "read_repo_files":            read_repo_files,
+        "read_staged_files":          read_staged_files,
         "apply_search_replace_patch": apply_search_replace_patch,
         "stage_patch":                stage_patch,
         "stage_new_file":             stage_new_file,

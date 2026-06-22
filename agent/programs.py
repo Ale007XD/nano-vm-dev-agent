@@ -54,6 +54,12 @@ def _patch_prompt(index: int, has_references: bool) -> str:
         "- Each SEARCH block must match exactly once in the file shown above.\n"
         "- Preserve indentation and code style exactly.\n"
         "- mypy --strict must pass after the patch (0 errors).\n"
+        "- Do not copy '# type: ignore[...]' comments from the reference "
+        "files unless the same mypy error genuinely applies here — an "
+        "unused ignore is itself a mypy --strict error.\n"
+        "- Every name you use (Enum, auto, etc.) must have a matching "
+        "import in the new content — re-check imports after rewriting "
+        "the header, do not drop ones still used below.\n"
         "- Output ONLY patch blocks — no explanation, no markdown prose.\n\n"
         "## Output format — CRITICAL\n"
         "Return one or more blocks in this exact format:\n\n"
@@ -90,6 +96,10 @@ def _create_prompt(index: int, has_references: bool) -> str:
         f"{ref_rule}"
         "- Output ONLY the raw file content — no explanation, no markdown fences.\n"
         "- File must be syntactically complete and importable on its own.\n"
+        "- Every name you use (Enum, auto, etc.) must have a matching import.\n"
+        "- Do not copy '# type: ignore[...]' comments from the reference "
+        "files unless the same mypy error genuinely applies here — an "
+        "unused ignore is itself a mypy --strict error.\n"
         "- mypy --strict must pass (0 errors).\n"
         "- Include 'from __future__ import annotations' if the spec implies "
         "modern type hints.\n\n"
@@ -98,19 +108,31 @@ def _create_prompt(index: int, has_references: bool) -> str:
 
 _TAIL_STEPS: list[dict[str, Any]] = [
     {
+        "id": "read_staged",
+        "type": "tool",
+        "tool": "read_staged_files",
+        "args": {"paths": "$target_files"},
+        "next_step": "generate_test",
+    },
+    {
         "id": "generate_test",
         "type": "llm",
         "prompt": (
             "You are an expert Python developer.\n\n"
             "## Sprint specification\n$sprint_spec\n\n"
+            "## Actual generated/patched file contents — THIS is the real "
+            "API you must test, not what the spec implies\n"
+            "$read_staged.output\n\n"
             "## Task\n"
-            "Write the complete test file '$test_file' for the sprint above.\n\n"
+            "Write the complete test file '$test_file' for the code shown above.\n\n"
             "Rules:\n"
             "- Use pytest (no unittest).\n"
             "- Use 'from __future__ import annotations' (double underscores).\n"
-            "- Tests must be async-compatible if needed (pytest-asyncio).\n"
-            "- Cover all test cases listed in spec.\n"
-            "- Use tmp_path fixture for SQLite db.\n\n"
+            "- Use ONLY the classes, constructors, and method signatures shown "
+            "in the file contents above — do not invent methods, do not assume "
+            "async/await unless the code above actually uses it, do not assume "
+            "a different constructor shape (e.g. db_path=) than what is shown.\n"
+            "- Cover all test cases listed in spec.\n\n"
             "## Output format — CRITICAL\n"
             "Return ONLY a valid JSON object with ONE key:\n"
             '{"$test_file": "...complete test file content..."}\n'
@@ -358,7 +380,7 @@ def build_program_sprint(
         )
 
     for i in range(n):
-        next_after = _first_step_id(i + 1, is_new_flags) if i + 1 < n else "generate_test"
+        next_after = _first_step_id(i + 1, is_new_flags) if i + 1 < n else "read_staged"
         steps.extend(_file_steps(i, next_after, is_new_flags[i], has_references))
     steps.extend(_TAIL_STEPS)
 

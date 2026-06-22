@@ -287,6 +287,58 @@ def stage_new_file(file_path: str, content: str, **kwargs: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# read_staged_files — buffer-aware read, for steps that run AFTER staging
+# but BEFORE commit (e.g. generate_test)
+# ---------------------------------------------------------------------------
+
+def read_staged_files(paths: str, **kwargs: Any) -> str:
+    """Read target files as they will look after commit — from _patch_buffer
+    if staged this sprint, falling back to disk otherwise (file untouched,
+    or a brand-new file not yet staged for some reason).
+
+    Why this exists: generate_test runs after all per-file patch/stage steps
+    but before commit_patches() — at that point the real content lives in
+    the buffer, not on disk. Without this, a test-generation prompt built
+    from $sprint_spec alone has zero visibility into what was actually
+    generated and hallucinates an unrelated API shape (DECISIONS.md
+    2026-06-22: sprint_m1_inventory_promotions — generated tests called
+    async db_path-based methods against FSMs that were actually sync,
+    callback-DI based; pytest would have failed even if mypy had passed).
+
+    Args:
+        paths: JSON string of list[str] — repo-relative or absolute paths.
+
+    Returns:
+        Concatenated "### FILE: <path>\\n<content>\\n\\n" blocks, same
+        format as read_repo_files, so prompts can treat them interchangeably.
+    """
+    import os
+
+    try:
+        path_list: list[str] = json.loads(paths)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"read_staged_files: paths must be JSON list, got: {paths!r}"
+        ) from exc
+
+    repo_path: str = kwargs.get("repo_path", "") or ""
+    blocks: list[str] = []
+    for p in path_list:
+        full_path = p if os.path.isabs(p) else os.path.join(repo_path, p)
+        if full_path in _patch_buffer:
+            content = _patch_buffer[full_path]
+        else:
+            try:
+                with open(full_path, encoding="utf-8") as fh:
+                    content = fh.read()
+            except FileNotFoundError:
+                content = "<file does not exist — not yet staged or written>"
+        blocks.append(f"### FILE: {full_path}\n{content}")
+
+    return "\n\n".join(blocks)
+
+
+# ---------------------------------------------------------------------------
 # validate_staged_mypy
 # ---------------------------------------------------------------------------
 
