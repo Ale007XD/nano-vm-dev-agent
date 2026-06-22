@@ -21,6 +21,15 @@ async def main() -> None:
         ],
         test_file="tests/unit/fsm/test_inventory_fsm.py",
         repo_path="/home/alexd/projects/sieshka",
+        # Sprint spec requires "Same BaseFSM[StateType, EventType] pattern
+        # as OrderFSM" — without showing these to the LLM, new-file prompts
+        # have zero visibility into the existing convention and fabricate
+        # their own (validated 2026-06-21: 4 files, 3 different wrong
+        # BaseFSM import paths + 2 local reimplementations).
+        reference_files=[
+            "app/fsm/core/base.py",
+            "app/domains/orders/fsm.py",
+        ],
     )
 
     print("\n" + "=" * 80)
