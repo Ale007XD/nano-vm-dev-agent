@@ -32,44 +32,69 @@ from __future__ import annotations
 
 from typing import Any
 
-_PATCH_PROMPT_TEMPLATE = (
-    "You are an expert Python developer.\n\n"
-    "## Sprint specification\n$sprint_spec\n\n"
-    "## Current file: $file_{i}_file\n$read_{i}.output\n\n"
-    "## Task\n"
-    "Produce a Search&Replace patch for ONLY the changes to this file "
-    "described in the specification above.\n\n"
-    "Rules:\n"
-    "- Each SEARCH block must match exactly once in the file shown above.\n"
-    "- Preserve indentation and code style exactly.\n"
-    "- mypy --strict must pass after the patch (0 errors).\n"
-    "- Output ONLY patch blocks — no explanation, no markdown prose.\n\n"
-    "## Output format — CRITICAL\n"
-    "Return one or more blocks in this exact format:\n\n"
-    "<<<SEARCH\n"
-    "<exact lines from current file>\n"
-    "=======\n"
-    "<replacement lines>\n"
-    ">>>REPLACE\n\n"
-    "Multiple blocks are allowed. No other text."
+_REFERENCE_SECTION_TEMPLATE = (
+    "## Reference files (existing project code — for context ONLY, "
+    "do NOT modify these, they are not your target)\n"
+    "$read_references.output\n\n"
 )
 
-_CREATE_PROMPT_TEMPLATE = (
-    "You are an expert Python developer.\n\n"
-    "## Sprint specification\n$sprint_spec\n\n"
-    "## New file to create: $file_{i}_file\n\n"
-    "This file does not exist yet — there is nothing to diff against.\n\n"
-    "## Task\n"
-    "Write the COMPLETE content of this new file from scratch, satisfying "
-    "the specification above.\n\n"
-    "Rules:\n"
-    "- Output ONLY the raw file content — no explanation, no markdown fences.\n"
-    "- File must be syntactically complete and importable on its own.\n"
-    "- mypy --strict must pass (0 errors).\n"
-    "- Include 'from __future__ import annotations' if the spec implies "
-    "modern type hints.\n\n"
-    "Output the file content now — nothing else."
-)
+
+def _patch_prompt(index: int, has_references: bool) -> str:
+    """S&R patch prompt for an EXISTING target file at `index`."""
+    ref_section = _REFERENCE_SECTION_TEMPLATE if has_references else ""
+    return (
+        "You are an expert Python developer.\n\n"
+        "## Sprint specification\n$sprint_spec\n\n"
+        f"{ref_section}"
+        f"## Current file: $file_{index}_file\n$read_{index}.output\n\n"
+        "## Task\n"
+        "Produce a Search&Replace patch for ONLY the changes to this file "
+        "described in the specification above.\n\n"
+        "Rules:\n"
+        "- Each SEARCH block must match exactly once in the file shown above.\n"
+        "- Preserve indentation and code style exactly.\n"
+        "- mypy --strict must pass after the patch (0 errors).\n"
+        "- Output ONLY patch blocks — no explanation, no markdown prose.\n\n"
+        "## Output format — CRITICAL\n"
+        "Return one or more blocks in this exact format:\n\n"
+        "<<<SEARCH\n"
+        "<exact lines from current file>\n"
+        "=======\n"
+        "<replacement lines>\n"
+        ">>>REPLACE\n\n"
+        "Multiple blocks are allowed. No other text."
+    )
+
+
+def _create_prompt(index: int, has_references: bool) -> str:
+    """Full-content prompt for a NEW target file at `index` (no S&R — there
+    is nothing on disk yet to diff against)."""
+    ref_section = _REFERENCE_SECTION_TEMPLATE if has_references else ""
+    ref_rule = (
+        "- Match the patterns/imports shown in the reference files above "
+        "exactly — do not invent alternative import paths or redefine "
+        "classes that already exist there.\n"
+        if has_references
+        else ""
+    )
+    return (
+        "You are an expert Python developer.\n\n"
+        "## Sprint specification\n$sprint_spec\n\n"
+        f"{ref_section}"
+        f"## New file to create: $file_{index}_file\n\n"
+        "This file does not exist yet — there is nothing to diff against.\n\n"
+        "## Task\n"
+        "Write the COMPLETE content of this new file from scratch, satisfying "
+        "the specification above.\n\n"
+        "Rules:\n"
+        f"{ref_rule}"
+        "- Output ONLY the raw file content — no explanation, no markdown fences.\n"
+        "- File must be syntactically complete and importable on its own.\n"
+        "- mypy --strict must pass (0 errors).\n"
+        "- Include 'from __future__ import annotations' if the spec implies "
+        "modern type hints.\n\n"
+        "Output the file content now — nothing else."
+    )
 
 _TAIL_STEPS: list[dict[str, Any]] = [
     {
@@ -170,7 +195,9 @@ _TAIL_STEPS: list[dict[str, Any]] = [
 ]
 
 
-def _file_steps(index: int, next_after: str, is_new: bool) -> list[dict[str, Any]]:
+def _file_steps(
+    index: int, next_after: str, is_new: bool, has_references: bool
+) -> list[dict[str, Any]]:
     """Build the step chain for the target file at `index`.
 
     Two shapes, chosen by `is_new`:
@@ -185,14 +212,20 @@ def _file_steps(index: int, next_after: str, is_new: bool) -> list[dict[str, Any
     a variant of patching).
 
     Args:
-        index:      0-based position of this file in target_files.
-        next_after: step id to jump to after staging — the next file's
-                    first step (read_{i+1} or patch_{i+1} depending on
-                    *its* is_new flag), or 'generate_test' for the last file.
-        is_new:     True if this target file does not exist on disk yet.
+        index:          0-based position of this file in target_files.
+        next_after:     step id to jump to after staging — the next file's
+                        first step (read_{i+1} or patch_{i+1} depending on
+                        *its* is_new flag), or 'generate_test' for the last file.
+        is_new:         True if this target file does not exist on disk yet.
+        has_references: True if a read_references step precedes the file
+                        chain — both prompt variants then include the
+                        reference-files section (DECISIONS.md 2026-06-21:
+                        new-file prompts with zero codebase context produced
+                        3 different wrong import paths / 2 duplicate BaseFSM
+                        reimplementations across 4 sibling files).
     """
     if is_new:
-        prompt = _CREATE_PROMPT_TEMPLATE.format(i=index)
+        prompt = _create_prompt(index, has_references)
         return [
             {
                 "id": f"patch_{index}",
@@ -218,7 +251,7 @@ def _file_steps(index: int, next_after: str, is_new: bool) -> list[dict[str, Any
             },
         ]
 
-    prompt = _PATCH_PROMPT_TEMPLATE.format(i=index)
+    prompt = _patch_prompt(index, has_references)
     return [
         {
             "id": f"read_{index}",
@@ -256,7 +289,10 @@ def _first_step_id(index: int, is_new_flags: list[bool]) -> str:
     return f"patch_{index}" if is_new_flags[index] else f"read_{index}"
 
 
-def build_program_sprint(num_files: int | list[bool]) -> dict[str, Any]:
+def build_program_sprint(
+    num_files: int | list[bool],
+    reference_files: list[str] | None = None,
+) -> dict[str, Any]:
     """Build the sprint FSM program for an arbitrary number of target files.
 
     Generates one (read->patch[S&R]->stage) or (patch[full]->stage_new)
@@ -264,12 +300,23 @@ def build_program_sprint(num_files: int | list[bool]) -> dict[str, Any]:
     into the shared generate_test -> validate_mypy -> commit/rollback ->
     run_tests -> pytest_guard tail (DA-4, unchanged).
 
+    If `reference_files` is non-empty, a single 'read_references' step runs
+    first (reads all of them via read_repo_files in one call), and every
+    per-file prompt (both S&R and full-content) includes a "Reference files"
+    section showing their content — read-only context, never a patch target.
+    Without this, new-file prompts have zero visibility into existing
+    project conventions (canonical base classes, import paths) and the LLM
+    fabricates its own — validated failure mode, see DECISIONS.md
+    2026-06-21 (sprint_m1_inventory_promotions: 4 new FSM files, 3 different
+    wrong import paths for BaseFSM + 2 files reimplementing it locally).
+
     Required context variables (in addition to the shared ones consumed
     by the tail — sprint_spec, target_files, test_file, repo_path):
 
-        file_{i}_file  : str            — plain path, for stage + prompt label
-        file_{i}_paths : JSON list[str] — for read_repo_files, EXISTING
-                         files only (new files skip the read step entirely)
+        file_{i}_file   : str            — plain path, for stage + prompt label
+        file_{i}_paths  : JSON list[str] — for read_repo_files, EXISTING
+                          files only (new files skip the read step entirely)
+        reference_paths : JSON list[str] — only if reference_files given
 
     Args:
         num_files: either a plain int (back-compat — all files treated as
@@ -277,6 +324,10 @@ def build_program_sprint(num_files: int | list[bool]) -> dict[str, Any]:
                    list[bool] of per-file is_new flags (preferred — caller
                    should compute these from os.path.exists() at sprint
                    start, see agent/runner.py).
+        reference_files: optional list of existing repo-relative or absolute
+                   paths to show every per-file prompt as read-only context
+                   (e.g. a canonical base class + one reference implementation
+                   the new files are expected to follow).
 
     Raises:
         ValueError: if num_files (or len(is_new_flags)) < 1.
@@ -290,11 +341,25 @@ def build_program_sprint(num_files: int | list[bool]) -> dict[str, Any]:
         if len(is_new_flags) < 1:
             raise ValueError("build_program_sprint: num_files must be >= 1")
 
+    has_references = bool(reference_files)
     n = len(is_new_flags)
     steps: list[dict[str, Any]] = []
+
+    first_file_step = _first_step_id(0, is_new_flags)
+    if has_references:
+        steps.append(
+            {
+                "id": "read_references",
+                "type": "tool",
+                "tool": "read_repo_files",
+                "args": {"paths": "$reference_paths"},
+                "next_step": first_file_step,
+            }
+        )
+
     for i in range(n):
         next_after = _first_step_id(i + 1, is_new_flags) if i + 1 < n else "generate_test"
-        steps.extend(_file_steps(i, next_after, is_new_flags[i]))
+        steps.extend(_file_steps(i, next_after, is_new_flags[i], has_references))
     steps.extend(_TAIL_STEPS)
 
     return {"name": "sprint_execution", "steps": steps}

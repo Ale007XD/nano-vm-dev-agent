@@ -178,6 +178,7 @@ async def run_sprint(
     llm_model: str | None = None,
     repo_path: str = ".",
     adapter_kwargs: dict[str, Any] | None = None,
+    reference_files: list[str] | None = None,
 ) -> Trace:
     """Run a dev-agent sprint using the configured LLM provider.
 
@@ -192,6 +193,13 @@ async def run_sprint(
                         or NANO_VM_AGENT_MODEL env var.
         repo_path:      Root of the repository being patched.
         adapter_kwargs: Extra kwargs forwarded to LiteLLMAdapter.
+        reference_files: Optional existing repo files (e.g. a canonical base
+                        class + one reference implementation) shown to every
+                        per-file prompt as read-only context. Without this,
+                        new-file prompts have zero visibility into existing
+                        project conventions and the LLM fabricates its own
+                        import paths / reimplements shared base classes
+                        (DECISIONS.md 2026-06-21, sprint_m1_inventory_promotions).
 
     Returns:
         Trace from ExecutionVM.run().
@@ -239,7 +247,14 @@ async def run_sprint(
             f"{[p for p, n in zip(resolved, is_new_flags) if n]}"
         )
 
-    program = Program.from_dict(build_program_sprint(is_new_flags))
+    resolved_refs = [
+        p if os.path.isabs(p) else os.path.join(abs_repo, p)
+        for p in (reference_files or [])
+    ]
+    if resolved_refs:
+        print(f"[runner] reference files (read-only context): {resolved_refs}")
+
+    program = Program.from_dict(build_program_sprint(is_new_flags, resolved_refs))
 
     context: dict[str, str] = {
         "sprint_spec":  sprint_spec,
@@ -247,6 +262,8 @@ async def run_sprint(
         "test_file":    test_file_resolved,
         "repo_path":    abs_repo,
     }
+    if resolved_refs:
+        context["reference_paths"] = json.dumps(resolved_refs)
     for i, (path, is_new) in enumerate(zip(resolved, is_new_flags)):
         context[f"file_{i}_file"] = path
         if not is_new:
