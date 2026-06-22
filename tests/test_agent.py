@@ -25,6 +25,7 @@ DA-21  mixed sprint E2E: file_0 existing (S&R) + file_1 new (full-content) → t
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.programs import build_program_sprint
+from agent.programs import PROGRAM_SPRINT, build_program_sprint
 from agent.tools import (
     apply_search_replace_patch,
     commit_patches,
@@ -639,3 +640,127 @@ def test_da_21_mixed_existing_and_new_file_sprint_e2e(tmp_path: Path) -> None:
     assert "read_1" not in step_ids  # new file was never read
     assert "patch_0" in step_ids
     assert "patch_1" in step_ids
+
+
+# ---------------------------------------------------------------------------
+# reference_files tests (post-2026-06-21 refactor) — DA-28..31
+# ---------------------------------------------------------------------------
+
+def test_da_28_build_program_sprint_no_references_unchanged() -> None:
+    """Without reference_files, no read_references step appears and prompts
+    contain no 'Reference files' section — exact pre-existing behavior."""
+    program_dict = build_program_sprint(2)
+    ids = [s["id"] for s in program_dict["steps"]]
+    assert "read_references" not in ids
+
+    patch_0 = next(s for s in program_dict["steps"] if s["id"] == "patch_0")
+    assert "Reference files" not in patch_0["prompt"]
+    assert "$read_references.output" not in patch_0["prompt"]
+
+
+def test_da_29_build_program_sprint_with_references_adds_read_step() -> None:
+    """reference_files non-empty → read_references step inserted before the
+    first file's chain, and every patch_{i} prompt includes the reference
+    section referencing $read_references.output."""
+    program_dict = build_program_sprint([False, True], reference_files=["app/fsm/core/base.py"])
+    steps_by_id = {s["id"]: s for s in program_dict["steps"]}
+
+    assert "read_references" in steps_by_id
+    ref_step = steps_by_id["read_references"]
+    assert ref_step["tool"] == "read_repo_files"
+    assert ref_step["args"] == {"paths": "$reference_paths"}
+    # read_references must chain into the first file's first step (read_0,
+    # since file 0 is existing) — not directly into generate_test.
+    assert ref_step["next_step"] == "read_0"
+
+    patch_0_prompt = steps_by_id["patch_0"]["prompt"]
+    patch_1_prompt = steps_by_id["patch_1"]["prompt"]
+    assert "$read_references.output" in patch_0_prompt
+    assert "Reference files" in patch_0_prompt
+    # is_new file's create-prompt also gets the reference section
+    assert "$read_references.output" in patch_1_prompt
+    assert "do NOT modify" in patch_1_prompt or "do not invent alternative" in patch_1_prompt
+
+
+def test_da_30_build_program_sprint_references_chain_to_first_new_file() -> None:
+    """If file 0 is new (no read_0 step exists), read_references must chain
+    directly into patch_0, not into a nonexistent read_0."""
+    program_dict = build_program_sprint([True], reference_files=["app/domains/orders/fsm.py"])
+    steps_by_id = {s["id"]: s for s in program_dict["steps"]}
+    assert steps_by_id["read_references"]["next_step"] == "patch_0"
+    assert "read_0" not in steps_by_id
+
+
+def test_da_31_reference_files_e2e_inventory_fsm_sprint(tmp_path: Path) -> None:
+    """E2E repro of sprint_m1_inventory_promotions's actual failure mode:
+    a new file is created WITH reference context (canonical BaseFSM shown
+    to the LLM) and the pipeline runs through to SUCCESS. This doesn't
+    assert the LLM "got it right" (that's a MockLLMAdapter, not a real
+    model) — it asserts the wiring: read_references executes once, its
+    output reaches the patch_0 prompt via context substitution, and the
+    rest of the DA-4 tail (mypy/commit/pytest) is unaffected."""
+    from nano_vm.models import Program, TraceStatus
+    from nano_vm.vm import ExecutionVM
+
+    base_fsm = tmp_path / "app" / "fsm" / "core" / "base.py"
+    base_fsm.parent.mkdir(parents=True, exist_ok=True)
+    base_fsm.write_text(
+        "from __future__ import annotations\n\n"
+        "class BaseFSM:\n"
+        "    def __init__(self, initial_state):\n"
+        "        self._state = initial_state\n",
+        encoding="utf-8",
+    )
+
+    new_file = tmp_path / "app" / "domains" / "inventory" / "fsm.py"
+    test_f = tmp_path / "tests" / "test_inventory_fsm.py"
+    test_f.parent.mkdir(parents=True, exist_ok=True)
+    test_f.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    new_file_content = (
+        "from app.fsm.core.base import BaseFSM\n\n"
+        "class InventoryFSM(BaseFSM):\n    pass\n"
+    )
+    test_json = json.dumps({str(test_f): "def test_ok():\n    assert True\n"})
+    llm_responses = [new_file_content, test_json]
+
+    vm = ExecutionVM(
+        llm=MockLLMAdapter(llm_responses),
+        tools={
+            "read_repo_files":            read_repo_files,
+            "apply_search_replace_patch": apply_search_replace_patch,
+            "stage_patch":                stage_patch,
+            "stage_new_file":             stage_new_file,
+            "validate_staged_mypy":       lambda paths, **kw: "OK",
+            "commit_patches":             commit_patches,
+            "rollback_patches":           rollback_patches,
+            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy":                   lambda paths, **kw: "OK",
+            "run_pytest":                 lambda test_file, **kw: "PASS",
+            "write_repo_files":           write_repo_files,
+            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
+            "notify_done":                lambda **kw: "DONE",
+        },
+    )
+
+    program = Program.from_dict(
+        build_program_sprint([True], reference_files=[str(base_fsm)])
+    )
+    context: dict[str, str] = {
+        "sprint_spec":     "create InventoryFSM following BaseFSM pattern",
+        "target_files":    json.dumps([str(new_file)]),
+        "test_file":       str(test_f),
+        "repo_path":       str(tmp_path),
+        "file_0_file":     str(new_file),
+        "reference_paths": json.dumps([str(base_fsm)]),
+    }
+
+    trace = asyncio.run(vm.run(program, context=context))
+
+    assert trace.status == TraceStatus.SUCCESS
+    step_ids = [s.step_id for s in trace.steps]
+    assert "read_references" in step_ids
+    assert step_ids.index("read_references") < step_ids.index("patch_0")
+    ref_step_result = next(s for s in trace.steps if s.step_id == "read_references")
+    assert "class BaseFSM" in ref_step_result.output
