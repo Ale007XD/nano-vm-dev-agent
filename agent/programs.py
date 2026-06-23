@@ -106,115 +106,144 @@ def _create_prompt(index: int, has_references: bool) -> str:
         "Output the file content now — nothing else."
     )
 
-_TAIL_STEPS: list[dict[str, Any]] = [
-    {
-        "id": "read_staged",
-        "type": "tool",
-        "tool": "read_staged_files",
-        "args": {"paths": "$target_files"},
-        "next_step": "generate_test",
-    },
-    {
-        "id": "generate_test",
-        "type": "llm",
-        "prompt": (
-            "You are an expert Python developer.\n\n"
-            "## Sprint specification\n$sprint_spec\n\n"
-            "## Actual generated/patched file contents — THIS is the real "
-            "API you must test, not what the spec implies\n"
-            "$read_staged.output\n\n"
-            "## Task\n"
-            "Write the complete test file '$test_file' for the code shown above.\n\n"
-            "Rules:\n"
-            "- Use pytest (no unittest).\n"
-            "- Use 'from __future__ import annotations' (double underscores).\n"
-            "- Use ONLY the classes, constructors, and method signatures shown "
-            "in the file contents above — do not invent methods, do not assume "
-            "async/await unless the code above actually uses it, do not assume "
-            "a different constructor shape (e.g. db_path=) than what is shown.\n"
-            "- Cover all test cases listed in spec.\n\n"
-            "## Output format — CRITICAL\n"
-            "Return ONLY a valid JSON object with ONE key:\n"
-            '{"$test_file": "...complete test file content..."}\n'
-            "No markdown fences. No explanation. Pure JSON only."
-        ),
-        "output_key": "test_patch",
-        "timeout_seconds": 120,
-        "on_timeout": "fail",
-    },
-    {
-        "id": "write_test",
-        "type": "tool",
-        "tool": "write_repo_files",
-        "args": {"files_json": "$test_patch"},
-        "next_step": "validate_mypy",
-    },
-    {
-        "id": "validate_mypy",
-        "type": "tool",
-        "tool": "validate_staged_mypy",
-        "args": {"paths": "$target_files"},
-        "next_step": "mypy_guard",
-    },
-    {
-        "id": "mypy_guard",
-        "type": "condition",
-        "condition": "$validate_mypy.output == 'OK'",
-        "then": "commit",
-        "otherwise": "do_rollback_mypy",
-    },
-    {
-        "id": "do_rollback_mypy",
-        "type": "tool",
-        "tool": "rollback_patches",
-        "next_step": "reject_mypy",
-    },
-    {
-        "id": "commit",
-        "type": "tool",
-        "tool": "commit_patches",
-        "next_step": "run_tests",
-    },
-    {
-        "id": "run_tests",
-        "type": "tool",
-        "tool": "run_pytest",
-        "args": {"test_file": "$test_file"},
-        "next_step": "pytest_guard",
-    },
-    {
-        "id": "pytest_guard",
-        "type": "condition",
-        "condition": "$run_tests.output == 'PASS'",
-        "then": "notify_done",
-        "otherwise": "do_rollback_pytest",
-    },
-    {
-        "id": "do_rollback_pytest",
-        "type": "tool",
-        "tool": "git_checkout_files",
-        "args": {"paths": "$target_files"},
-        "next_step": "reject_pytest",
-    },
-    {
-        "id": "notify_done",
-        "type": "tool",
-        "tool": "notify_done",
-        "is_terminal": True,
-    },
-    {
-        "id": "reject_mypy",
-        "type": "tool",
-        "tool": "notify_rejected_mypy",
-        "is_terminal": True,
-    },
-    {
-        "id": "reject_pytest",
-        "type": "tool",
-        "tool": "notify_rejected_pytest",
-        "is_terminal": True,
-    },
-]
+def _build_tail_steps(has_references: bool) -> list[dict[str, Any]]:
+    """generate_test -> write_test -> validate_mypy -> commit/rollback ->
+    run_tests -> pytest_guard tail (DA-4), parameterized by has_references
+    so generate_test's prompt can show the same reference-files context
+    the per-file patch/create steps already saw.
+
+    generate_test fixes (DECISIONS.md 2026-06-22): without reference_files
+    context and an explicit no-tool-access rule, claude-sonnet-4.6 — given
+    a large, agentic-shaped prompt (spec + generated code + "Task" framing)
+    — hallucinated a <tool_call>{"name": "read_file", ...} block instead of
+    the requested JSON test file, because it felt it needed to inspect
+    models.py and the prompt's structure made it think a file-read tool was
+    available. It wasn't — StreamingLiteLLMAdapter never declares tools.
+    Fix: (1) show $read_references.output here too, removing the reason to
+    "go look"; (2) explicit rule forbidding tool-call syntax; (3) on_error
+    retry on generate_test itself (not write_test — write_test's input is
+    fixed once generate_test returns, retrying it alone re-feeds the same
+    bad string every time; only re-running the LLM call can produce a
+    different, hopefully well-formed, response).
+    """
+    ref_section = _REFERENCE_SECTION_TEMPLATE if has_references else ""
+    return [
+        {
+            "id": "read_staged",
+            "type": "tool",
+            "tool": "read_staged_files",
+            "args": {"paths": "$target_files"},
+            "next_step": "generate_test",
+        },
+        {
+            "id": "generate_test",
+            "type": "llm",
+            "prompt": (
+                "You are an expert Python developer.\n\n"
+                "## Sprint specification\n$sprint_spec\n\n"
+                f"{ref_section}"
+                "## Actual generated/patched file contents — THIS is the real "
+                "API you must test, not what the spec implies\n"
+                "$read_staged.output\n\n"
+                "## Task\n"
+                "Write the complete test file '$test_file' for the code shown above.\n\n"
+                "Rules:\n"
+                "- Use pytest (no unittest).\n"
+                "- Use 'from __future__ import annotations' (double underscores).\n"
+                "- Use ONLY the classes, constructors, and method signatures shown "
+                "in the file contents above — do not invent methods, do not assume "
+                "async/await unless the code above actually uses it, do not assume "
+                "a different constructor shape (e.g. db_path=) than what is shown.\n"
+                "- Cover all test cases listed in spec.\n"
+                "- You have NO tools and NO file-reading access beyond what is shown "
+                "in this prompt. Do not attempt tool_call, function_call, or any "
+                "similar syntax — there is nothing on the other end to execute it. "
+                "If something seems missing, use your best judgement from what is "
+                "shown above and write the test anyway.\n\n"
+                "## Output format — CRITICAL\n"
+                "Return ONLY a valid JSON object with ONE key:\n"
+                '{"$test_file": "...complete test file content..."}\n'
+                "No markdown fences. No explanation. No tool calls. Pure JSON only."
+            ),
+            "output_key": "test_patch",
+            "on_error": "retry",
+            "max_retries": 2,
+            "timeout_seconds": 120,
+            "on_timeout": "fail",
+        },
+        {
+            "id": "write_test",
+            "type": "tool",
+            "tool": "write_repo_files",
+            "args": {"files_json": "$test_patch"},
+            "next_step": "validate_mypy",
+        },
+        {
+            "id": "validate_mypy",
+            "type": "tool",
+            "tool": "validate_staged_mypy",
+            "args": {"paths": "$target_files"},
+            "next_step": "mypy_guard",
+        },
+        {
+            "id": "mypy_guard",
+            "type": "condition",
+            "condition": "$validate_mypy.output == 'OK'",
+            "then": "commit",
+            "otherwise": "do_rollback_mypy",
+        },
+        {
+            "id": "do_rollback_mypy",
+            "type": "tool",
+            "tool": "rollback_patches",
+            "next_step": "reject_mypy",
+        },
+        {
+            "id": "commit",
+            "type": "tool",
+            "tool": "commit_patches",
+            "next_step": "run_tests",
+        },
+        {
+            "id": "run_tests",
+            "type": "tool",
+            "tool": "run_pytest",
+            "args": {"test_file": "$test_file"},
+            "next_step": "pytest_guard",
+        },
+        {
+            "id": "pytest_guard",
+            "type": "condition",
+            "condition": "$run_tests.output == 'PASS'",
+            "then": "notify_done",
+            "otherwise": "do_rollback_pytest",
+        },
+        {
+            "id": "do_rollback_pytest",
+            "type": "tool",
+            "tool": "git_checkout_files",
+            "args": {"paths": "$target_files"},
+            "next_step": "reject_pytest",
+        },
+        {
+            "id": "notify_done",
+            "type": "tool",
+            "tool": "notify_done",
+            "is_terminal": True,
+        },
+        {
+            "id": "reject_mypy",
+            "type": "tool",
+            "tool": "notify_rejected_mypy",
+            "is_terminal": True,
+        },
+        {
+            "id": "reject_pytest",
+            "type": "tool",
+            "tool": "notify_rejected_pytest",
+            "is_terminal": True,
+        },
+    ]
 
 
 def _file_steps(
@@ -382,7 +411,7 @@ def build_program_sprint(
     for i in range(n):
         next_after = _first_step_id(i + 1, is_new_flags) if i + 1 < n else "read_staged"
         steps.extend(_file_steps(i, next_after, is_new_flags[i], has_references))
-    steps.extend(_TAIL_STEPS)
+    steps.extend(_build_tail_steps(has_references))
 
     return {"name": "sprint_execution", "steps": steps}
 
