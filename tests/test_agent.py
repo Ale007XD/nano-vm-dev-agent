@@ -25,6 +25,7 @@ DA-21  mixed sprint E2E: file_0 existing (S&R) + file_1 new (full-content) → t
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.programs import build_program_sprint
+from agent.programs import PROGRAM_SPRINT, build_program_sprint
 from agent.tools import (
     apply_search_replace_patch,
     commit_patches,
@@ -895,3 +896,52 @@ def test_da_35_generate_test_e2e_sees_real_staged_signature(tmp_path: Path) -> N
     generate_test_prompt = captured_prompts[1]
     assert "state_reader" in generate_test_prompt
     assert "state_writer" in generate_test_prompt
+
+
+# ---------------------------------------------------------------------------
+# generate_test fixes (post-2026-06-22) — DA-36..38
+# ---------------------------------------------------------------------------
+
+def test_da_36_generate_test_has_retry_configured() -> None:
+    """generate_test must retry on malformed LLM output — write_test's input
+    is fixed once generate_test returns, so only re-running the LLM call
+    (not retrying write_test) can produce a different, hopefully
+    well-formed, response. (DECISIONS.md 2026-06-22: claude-sonnet-4.6
+    hallucinated a <tool_call> block instead of the requested JSON, with
+    no retry configured, killing the whole sprint on one bad response.)"""
+    program_dict = build_program_sprint(1)
+    steps_by_id = {s["id"]: s for s in program_dict["steps"]}
+
+    generate_test = steps_by_id["generate_test"]
+    assert generate_test.get("on_error") == "retry"
+    assert generate_test.get("max_retries", 0) >= 1
+
+
+def test_da_37_generate_test_includes_reference_section_when_present() -> None:
+    """generate_test must see the same reference-files context the per-file
+    patch/create steps saw — without it, the model has no visibility into
+    e.g. models.py contents it didn't generate itself, and may try to
+    'go look' instead of writing the test with best-effort information."""
+    program_dict = build_program_sprint([True], reference_files=["app/domains/orders/models.py"])
+    generate_test_prompt = next(
+        s for s in program_dict["steps"] if s["id"] == "generate_test"
+    )["prompt"]
+
+    assert "$read_references.output" in generate_test_prompt
+    assert "Reference files" in generate_test_prompt
+
+
+def test_da_38_generate_test_forbids_tool_call_syntax() -> None:
+    """generate_test's prompt must explicitly tell the model it has no tool
+    access, regardless of whether reference_files are present — this is
+    the direct fix for the observed failure mode (model emitting a fake
+    tool_call instead of the requested JSON)."""
+    program_dict = build_program_sprint(2)  # no references this time
+    generate_test_prompt = next(
+        s for s in program_dict["steps"] if s["id"] == "generate_test"
+    )["prompt"]
+
+    assert "tool_call" in generate_test_prompt
+    assert "NO tools" in generate_test_prompt
+    # must hold with no reference_files too — this isn't reference-gated
+    assert "$read_references.output" not in generate_test_prompt
