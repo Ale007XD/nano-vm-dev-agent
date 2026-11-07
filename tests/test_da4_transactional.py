@@ -35,6 +35,7 @@ import types
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _reload_tools() -> types.ModuleType:
     """Reload agent.tools to reset _patch_buffer between tests."""
     if "agent.tools" in sys.modules:
@@ -51,6 +52,7 @@ def _reload_tools() -> types.ModuleType:
 # ---------------------------------------------------------------------------
 # DA4-01  stage reads from disk, buffer holds result, disk unchanged
 # ---------------------------------------------------------------------------
+
 
 def test_da4_01_stage_reads_disk_buffer_populated(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
@@ -70,6 +72,7 @@ def test_da4_01_stage_reads_disk_buffer_populated(tmp_path: os.PathLike[str]) ->
 # ---------------------------------------------------------------------------
 # DA4-02  second stage_patch reads from buffer, not disk
 # ---------------------------------------------------------------------------
+
 
 def test_da4_02_stage_accumulates_from_buffer(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
@@ -93,8 +96,10 @@ def test_da4_02_stage_accumulates_from_buffer(tmp_path: os.PathLike[str]) -> Non
 # DA4-03  stage_patch: no S&R blocks → ValueError
 # ---------------------------------------------------------------------------
 
+
 def test_da4_03_stage_no_blocks(tmp_path: os.PathLike[str]) -> None:
     import pytest
+
     tools = _reload_tools()
     f = tmp_path / "sample.py"
     f.write_text("x = 1\n", encoding="utf-8")
@@ -107,8 +112,10 @@ def test_da4_03_stage_no_blocks(tmp_path: os.PathLike[str]) -> None:
 # DA4-04  stage_patch: SEARCH not found → ValueError
 # ---------------------------------------------------------------------------
 
+
 def test_da4_04_stage_search_not_found(tmp_path: os.PathLike[str]) -> None:
     import pytest
+
     tools = _reload_tools()
     f = tmp_path / "sample.py"
     f.write_text("x = 1\n", encoding="utf-8")
@@ -122,8 +129,10 @@ def test_da4_04_stage_search_not_found(tmp_path: os.PathLike[str]) -> None:
 # DA4-05  stage_patch: SEARCH matches > 1 → ValueError
 # ---------------------------------------------------------------------------
 
+
 def test_da4_05_stage_search_ambiguous(tmp_path: os.PathLike[str]) -> None:
     import pytest
+
     tools = _reload_tools()
     f = tmp_path / "sample.py"
     f.write_text("x = 1\nx = 1\n", encoding="utf-8")
@@ -136,6 +145,7 @@ def test_da4_05_stage_search_ambiguous(tmp_path: os.PathLike[str]) -> None:
 # ---------------------------------------------------------------------------
 # DA4-06  commit_patches: writes to disk, clears buffer
 # ---------------------------------------------------------------------------
+
 
 def test_da4_06_commit_writes_and_clears(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
@@ -155,6 +165,7 @@ def test_da4_06_commit_writes_and_clears(tmp_path: os.PathLike[str]) -> None:
 # DA4-07  commit_patches: empty buffer → sentinel
 # ---------------------------------------------------------------------------
 
+
 def test_da4_07_commit_empty_buffer() -> None:
     tools = _reload_tools()
     result = tools.commit_patches()
@@ -164,6 +175,7 @@ def test_da4_07_commit_empty_buffer() -> None:
 # ---------------------------------------------------------------------------
 # DA4-08  rollback_patches: clears buffer, disk unchanged
 # ---------------------------------------------------------------------------
+
 
 def test_da4_08_rollback_clears_buffer_disk_safe(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
@@ -183,6 +195,7 @@ def test_da4_08_rollback_clears_buffer_disk_safe(tmp_path: os.PathLike[str]) -> 
 # DA4-09  rollback_patches: empty buffer → sentinel
 # ---------------------------------------------------------------------------
 
+
 def test_da4_09_rollback_empty_buffer() -> None:
     tools = _reload_tools()
     result = tools.rollback_patches()
@@ -192,6 +205,7 @@ def test_da4_09_rollback_empty_buffer() -> None:
 # ---------------------------------------------------------------------------
 # DA4-10  validate_staged_mypy: OK on valid Python
 # ---------------------------------------------------------------------------
+
 
 def test_da4_10_validate_staged_mypy_ok(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
@@ -217,6 +231,7 @@ def test_da4_10_validate_staged_mypy_ok(tmp_path: os.PathLike[str]) -> None:
 # DA4-11  validate_staged_mypy: returns errors on type-invalid Python
 # ---------------------------------------------------------------------------
 
+
 def test_da4_11_validate_staged_mypy_fail(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
     f = tmp_path / "bad.py"
@@ -237,8 +252,10 @@ def test_da4_11_validate_staged_mypy_fail(tmp_path: os.PathLike[str]) -> None:
 # DA4-12  git_checkout_files: ValueError on non-JSON paths
 # ---------------------------------------------------------------------------
 
+
 def test_da4_12_git_checkout_invalid_paths() -> None:
     import pytest
+
     tools = _reload_tools()
     with pytest.raises(ValueError, match="paths must be JSON list"):
         tools.git_checkout_files("not-json")
@@ -247,6 +264,7 @@ def test_da4_12_git_checkout_invalid_paths() -> None:
 # ---------------------------------------------------------------------------
 # DA4-13  happy path: stage → validate OK → commit → disk updated
 # ---------------------------------------------------------------------------
+
 
 def test_da4_13_happy_path(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
@@ -272,6 +290,7 @@ def test_da4_13_happy_path(tmp_path: os.PathLike[str]) -> None:
 # DA4-14  fail path: stage → validate fail → rollback → disk clean
 # ---------------------------------------------------------------------------
 
+
 def test_da4_14_fail_path_rollback(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
     f = tmp_path / "mod.py"
@@ -296,19 +315,19 @@ def test_da4_14_fail_path_rollback(tmp_path: os.PathLike[str]) -> None:
 # Helper: minimal git repo with one committed file
 # ---------------------------------------------------------------------------
 
+
 def _init_git_repo(repo_path: os.PathLike[str]) -> None:
     import subprocess
 
     subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"], cwd=repo_path, check=True
-    )
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_path, check=True)
 
 
 # ---------------------------------------------------------------------------
 # DA4-15  git_checkout_files: tracked file restored via 'git checkout'
 # ---------------------------------------------------------------------------
+
 
 def test_da4_15_git_checkout_tracked_file_restored(tmp_path: os.PathLike[str]) -> None:
     import subprocess
@@ -324,9 +343,7 @@ def test_da4_15_git_checkout_tracked_file_restored(tmp_path: os.PathLike[str]) -
     # Simulate a committed-then-rejected patch: mutate the file on disk.
     tracked.write_text("VERSION = 2  # bad patch\n", encoding="utf-8")
 
-    result = tools.git_checkout_files(
-        json.dumps(["existing.py"]), repo_path=str(tmp_path)
-    )
+    result = tools.git_checkout_files(json.dumps(["existing.py"]), repo_path=str(tmp_path))
 
     assert "RESTORED: existing.py" in result
     assert "REMOVED" not in result
@@ -337,6 +354,7 @@ def test_da4_15_git_checkout_tracked_file_restored(tmp_path: os.PathLike[str]) -
 # DA4-16  git_checkout_files: untracked (new) file removed, not checked out
 # ---------------------------------------------------------------------------
 
+
 def test_da4_16_git_checkout_untracked_file_removed(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
     _init_git_repo(tmp_path)
@@ -345,9 +363,7 @@ def test_da4_16_git_checkout_untracked_file_removed(tmp_path: os.PathLike[str]) 
     new_file = tmp_path / "brand_new.py"  # type: ignore[operator]
     new_file.write_text("VERSION = 1  # created this sprint, never committed\n", encoding="utf-8")
 
-    result = tools.git_checkout_files(
-        json.dumps(["brand_new.py"]), repo_path=str(tmp_path)
-    )
+    result = tools.git_checkout_files(json.dumps(["brand_new.py"]), repo_path=str(tmp_path))
 
     assert "REMOVED: brand_new.py" in result
     assert "RESTORED" not in result
@@ -357,6 +373,7 @@ def test_da4_16_git_checkout_untracked_file_removed(tmp_path: os.PathLike[str]) 
 # ---------------------------------------------------------------------------
 # DA4-17  git_checkout_files: mixed tracked+untracked in one call
 # ---------------------------------------------------------------------------
+
 
 def test_da4_17_git_checkout_mixed_tracked_and_untracked(
     tmp_path: os.PathLike[str],
@@ -389,6 +406,7 @@ def test_da4_17_git_checkout_mixed_tracked_and_untracked(
 # DA4-18  stage_new_file: buffers full content, no SEARCH/REPLACE needed
 # ---------------------------------------------------------------------------
 
+
 def test_da4_18_stage_new_file_buffers_full_content(tmp_path: os.PathLike[str]) -> None:
     tools = _reload_tools()
 
@@ -396,11 +414,7 @@ def test_da4_18_stage_new_file_buffers_full_content(tmp_path: os.PathLike[str]) 
     # File does not exist on disk — stage_new_file must not require it to.
     assert not os.path.exists(str(new_path))
 
-    content = (
-        "from __future__ import annotations\n\n"
-        "class InventoryFSM:\n"
-        "    pass\n"
-    )
+    content = "from __future__ import annotations\n\nclass InventoryFSM:\n    pass\n"
     result = tools.stage_new_file(str(new_path), content, repo_path=str(tmp_path))
 
     assert result == f"STAGED_NEW: {new_path}"

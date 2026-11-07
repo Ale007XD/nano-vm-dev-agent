@@ -58,9 +58,7 @@ async def test_da_22_accumulates_stream_chunks() -> None:
     chunks = [_make_chunk("Hello"), _make_chunk(", "), _make_chunk("world!")]
     fake_stream = _FakeStream(chunks)
 
-    with patch(
-        "agent.streaming_adapter.acompletion", new=AsyncMock(return_value=fake_stream)
-    ):
+    with patch("agent.streaming_adapter.acompletion", new=AsyncMock(return_value=fake_stream)):
         adapter = StreamingLiteLLMAdapter(model="openai/claude-sonnet-4.6")
         text, usage = await adapter.complete([{"role": "user", "content": "hi"}])
 
@@ -71,18 +69,14 @@ async def test_da_22_accumulates_stream_chunks() -> None:
 async def test_da_23_usage_chunk_populates_usage_dict() -> None:
     from agent.streaming_adapter import StreamingLiteLLMAdapter
 
-    raw_usage = types.SimpleNamespace(
-        prompt_tokens=10, completion_tokens=5, total_tokens=15
-    )
+    raw_usage = types.SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
     chunks = [
         _make_chunk("Hi"),
         _make_chunk(None, usage=raw_usage),  # final chunk: no content, has usage
     ]
     fake_stream = _FakeStream(chunks)
 
-    with patch(
-        "agent.streaming_adapter.acompletion", new=AsyncMock(return_value=fake_stream)
-    ):
+    with patch("agent.streaming_adapter.acompletion", new=AsyncMock(return_value=fake_stream)):
         adapter = StreamingLiteLLMAdapter(model="openai/claude-sonnet-4.6")
         text, usage = await adapter.complete([{"role": "user", "content": "hi"}])
 
@@ -102,9 +96,7 @@ async def test_da_24_no_usage_chunk_returns_none() -> None:
     chunks = [_make_chunk("ok")]
     fake_stream = _FakeStream(chunks)
 
-    with patch(
-        "agent.streaming_adapter.acompletion", new=AsyncMock(return_value=fake_stream)
-    ):
+    with patch("agent.streaming_adapter.acompletion", new=AsyncMock(return_value=fake_stream)):
         adapter = StreamingLiteLLMAdapter(model="openai/claude-sonnet-4.6")
         text, usage = await adapter.complete([{"role": "user", "content": "hi"}])
 

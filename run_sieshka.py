@@ -65,9 +65,7 @@ def _print_and_save_trace(sprint_name: str, trace: Trace) -> None:
     print("=" * 80)
 
     for idx, step in enumerate(trace.steps, start=1):
-        status = (
-            step.status.name if hasattr(step.status, "name") else str(step.status)
-        )
+        status = step.status.name if hasattr(step.status, "name") else str(step.status)
         print(f"\n[{idx}] {step.step_id}")
         print(f"    status      : {status}")
         print(f"    duration_ms : {step.duration_ms}")
@@ -87,9 +85,7 @@ def _print_and_save_trace(sprint_name: str, trace: Trace) -> None:
         "steps": [
             {
                 "step_id": s.step_id,
-                "status": (
-                    s.status.name if hasattr(s.status, "name") else str(s.status)
-                ),
+                "status": (s.status.name if hasattr(s.status, "name") else str(s.status)),
                 "duration_ms": s.duration_ms,
                 "output": str(getattr(s, "output", "")),
                 "error": str(getattr(s, "error", "")),
@@ -145,9 +141,7 @@ async def run_phase2_fsm_files() -> Trace:
     """Create/patch the 4 domain fsm.py files, now with real models.py
     content available as reference (in addition to BaseFSM + OrderFSM)."""
     return await run_sprint(
-        sprint_spec=Path(
-            "context/sprint_m1_inventory_promotions.md"
-        ).read_text(encoding="utf-8"),
+        sprint_spec=Path("context/sprint_m1_inventory_promotions.md").read_text(encoding="utf-8"),
         target_files=STALE_FSM_FILES,
         test_file="tests/unit/fsm/test_inventory_fsm.py",
         repo_path=REPO_PATH,

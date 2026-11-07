@@ -106,6 +106,7 @@ def _create_prompt(index: int, has_references: bool) -> str:
         "Output the file content now — nothing else."
     )
 
+
 def _build_tail_steps(has_references: bool) -> list[dict[str, Any]]:
     """generate_test -> write_test -> validate_mypy -> commit/rollback ->
     run_tests -> pytest_guard tail (DA-4), parameterized by has_references

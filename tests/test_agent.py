@@ -50,6 +50,7 @@ from agent.tools import (
 # Inline mock adapters (no real API needed)
 # ---------------------------------------------------------------------------
 
+
 class MockLLMAdapter:
     """Returns a fixed string or sequences of strings."""
 
@@ -77,6 +78,7 @@ class SlowLLMAdapter:
 # Unit tests — tools (sync)
 # ---------------------------------------------------------------------------
 
+
 def test_da_01_read_repo_files_existing(tmp_path: Path) -> None:
     f = tmp_path / "sample.py"
     f.write_text("x = 1\n", encoding="utf-8")
@@ -92,6 +94,7 @@ def test_da_02_read_repo_files_missing() -> None:
 
 def test_da_03_run_mypy_valid(valid_py: str) -> None:
     import subprocess as _sp
+
     with patch("agent.tools.subprocess.run") as mock_run:
         mock_run.return_value = _sp.CompletedProcess([], 0, stdout="", stderr="")
         result = run_mypy(json.dumps([valid_py]))
@@ -100,6 +103,7 @@ def test_da_03_run_mypy_valid(valid_py: str) -> None:
 
 def test_da_04_run_mypy_invalid(invalid_py: str) -> None:
     import subprocess as _sp
+
     with patch("agent.tools.subprocess.run") as mock_run:
         mock_run.return_value = _sp.CompletedProcess(
             [], 1, stdout="error: Incompatible return value type", stderr=""
@@ -138,18 +142,13 @@ def test_da_08_write_repo_files_invalid_json() -> None:
 # Unit tests — apply_search_replace_patch (DA-13..DA-16)
 # ---------------------------------------------------------------------------
 
+
 def test_da_13_apply_single_block(tmp_path: Path) -> None:
     """Single S&R block patches the file correctly."""
     f = tmp_path / "store.py"
     f.write_text("def foo():\n    return 1\n", encoding="utf-8")
 
-    patch_text = (
-        "<<<SEARCH\n"
-        "    return 1\n"
-        "=======\n"
-        "    return 42\n"
-        ">>>REPLACE"
-    )
+    patch_text = "<<<SEARCH\n    return 1\n=======\n    return 42\n>>>REPLACE"
     result = apply_search_replace_patch(str(f), patch_text)
 
     assert result == f"PATCHED: {f}"
@@ -189,13 +188,7 @@ def test_da_15_apply_search_not_found(tmp_path: Path) -> None:
     f = tmp_path / "tools.py"
     f.write_text("x = 1\n", encoding="utf-8")
 
-    patch_text = (
-        "<<<SEARCH\n"
-        "this_line_does_not_exist\n"
-        "=======\n"
-        "replacement\n"
-        ">>>REPLACE"
-    )
+    patch_text = "<<<SEARCH\nthis_line_does_not_exist\n=======\nreplacement\n>>>REPLACE"
     with pytest.raises(ValueError, match="SEARCH not found"):
         apply_search_replace_patch(str(f), patch_text)
 
@@ -208,13 +201,7 @@ def test_da_16_apply_search_ambiguous(tmp_path: Path) -> None:
     f = tmp_path / "ambiguous.py"
     f.write_text("x = 1\nx = 1\n", encoding="utf-8")
 
-    patch_text = (
-        "<<<SEARCH\n"
-        "x = 1\n"
-        "=======\n"
-        "x = 2\n"
-        ">>>REPLACE"
-    )
+    patch_text = "<<<SEARCH\nx = 1\n=======\nx = 2\n>>>REPLACE"
     with pytest.raises(ValueError, match="matches 2 times"):
         apply_search_replace_patch(str(f), patch_text)
 
@@ -223,18 +210,13 @@ def test_da_16_apply_search_ambiguous(tmp_path: Path) -> None:
 # Integration tests — PROGRAM_SPRINT FSM (async, MockLLMAdapter)
 # ---------------------------------------------------------------------------
 
+
 def _make_sr_patch(file_path: str) -> str:
     """Return a valid S&R patch string for the given file (no-op replacement)."""
     content = Path(file_path).read_text()
     # Replace the first line with itself — trivial but valid single-match patch
     first_line = content.split("\n")[0]
-    return (
-        f"<<<SEARCH\n"
-        f"{first_line}\n"
-        f"=======\n"
-        f"{first_line}\n"
-        f">>>REPLACE"
-    )
+    return f"<<<SEARCH\n{first_line}\n=======\n{first_line}\n>>>REPLACE"
 
 
 def _build_vm(
@@ -267,20 +249,20 @@ def _build_vm(
     vm = ExecutionVM(
         llm=MockLLMAdapter(llm_responses),
         tools={
-            "read_repo_files":            read_repo_files,
-            "read_staged_files":          read_staged_files,
+            "read_repo_files": read_repo_files,
+            "read_staged_files": read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
-            "stage_patch":                stage_patch,
-            "validate_staged_mypy":       lambda paths, **kw: mypy_result,
-            "commit_patches":             commit_patches,
-            "rollback_patches":           rollback_patches,
-            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
-            "run_mypy":                   lambda paths, **kw: mypy_result,
-            "run_pytest":                 lambda test_file, **kw: pytest_result,
-            "write_repo_files":           write_repo_files,
-            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
-            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
-            "notify_done":                lambda **kw: "DONE",
+            "stage_patch": stage_patch,
+            "validate_staged_mypy": lambda paths, **kw: mypy_result,
+            "commit_patches": commit_patches,
+            "rollback_patches": rollback_patches,
+            "git_checkout_files": lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy": lambda paths, **kw: mypy_result,
+            "run_pytest": lambda test_file, **kw: pytest_result,
+            "write_repo_files": write_repo_files,
+            "notify_rejected_mypy": lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest": lambda **kw: "REJECTED_PYTEST",
+            "notify_done": lambda **kw: "DONE",
         },
     )
     program = Program.from_dict(build_program_sprint(len(target_paths)))
@@ -289,10 +271,10 @@ def _build_vm(
     resolved = [str(p) for p in target_paths]
 
     context: dict[str, str] = {
-        "sprint_spec":  "add field y: int = 2",
+        "sprint_spec": "add field y: int = 2",
         "target_files": json.dumps(resolved),
-        "test_file":    str(test_f),
-        "repo_path":    abs_repo,
+        "test_file": str(test_f),
+        "repo_path": abs_repo,
     }
     for i, path in enumerate(resolved):
         context[f"file_{i}_paths"] = json.dumps([path])
@@ -319,9 +301,7 @@ async def test_da_10_mypy_fail(tmp_path: Path) -> None:
     """mypy fails → REJECTED_MYPY."""
     from nano_vm.models import TraceStatus
 
-    vm, program, context = _build_vm(
-        tmp_path, mypy_result="error: Incompatible return value"
-    )
+    vm, program, context = _build_vm(tmp_path, mypy_result="error: Incompatible return value")
     trace = await vm.run(program, context=context)
 
     assert trace.status == TraceStatus.SUCCESS
@@ -335,9 +315,7 @@ async def test_da_11_pytest_fail(tmp_path: Path) -> None:
     """mypy OK but pytest fails → REJECTED_PYTEST."""
     from nano_vm.models import TraceStatus
 
-    vm, program, context = _build_vm(
-        tmp_path, pytest_result="FAILED: assert 1 == 2"
-    )
+    vm, program, context = _build_vm(tmp_path, pytest_result="FAILED: assert 1 == 2")
     trace = await vm.run(program, context=context)
 
     assert trace.status == TraceStatus.SUCCESS
@@ -367,31 +345,34 @@ async def test_da_12_llm_timeout(tmp_path: Path) -> None:
     vm = ExecutionVM(
         llm=SlowLLMAdapter(),
         tools={
-            "read_repo_files":            read_repo_files,
-            "read_staged_files":          read_staged_files,
+            "read_repo_files": read_repo_files,
+            "read_staged_files": read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
-            "stage_patch":                stage_patch,
-            "validate_staged_mypy":       lambda paths, **kw: "OK",
-            "commit_patches":             commit_patches,
-            "rollback_patches":           rollback_patches,
-            "git_checkout_files":         lambda paths, **kw: "RESTORED:",
-            "run_mypy":                   lambda paths, **kw: "OK",
-            "run_pytest":                 lambda test_file, **kw: "PASS",
-            "write_repo_files":           write_repo_files,
-            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
-            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
-            "notify_done":                lambda **kw: "DONE",
+            "stage_patch": stage_patch,
+            "validate_staged_mypy": lambda paths, **kw: "OK",
+            "commit_patches": commit_patches,
+            "rollback_patches": rollback_patches,
+            "git_checkout_files": lambda paths, **kw: "RESTORED:",
+            "run_mypy": lambda paths, **kw: "OK",
+            "run_pytest": lambda test_file, **kw: "PASS",
+            "write_repo_files": write_repo_files,
+            "notify_rejected_mypy": lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest": lambda **kw: "REJECTED_PYTEST",
+            "notify_done": lambda **kw: "DONE",
         },
     )
     program = Program.from_dict(program_dict)
-    trace = await vm.run(program, context={
-        "sprint_spec":   "test",
-        "target_files":  json.dumps([str(target)]),
-        "test_file":     str(tmp_path / "test_sprint.py"),
-        "repo_path":     str(tmp_path),
-        "file_0_paths":  json.dumps([str(target)]),
-        "file_0_file":   str(target),
-    })
+    trace = await vm.run(
+        program,
+        context={
+            "sprint_spec": "test",
+            "target_files": json.dumps([str(target)]),
+            "test_file": str(tmp_path / "test_sprint.py"),
+            "repo_path": str(tmp_path),
+            "file_0_paths": json.dumps([str(target)]),
+            "file_0_file": str(target),
+        },
+    )
 
     assert trace.status == TraceStatus.FAILED
     assert trace.error is not None
@@ -401,6 +382,7 @@ async def test_da_12_llm_timeout(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Genericity tests (post-refactor) — DA-17, DA-18
 # ---------------------------------------------------------------------------
+
 
 def test_da_17_build_program_sprint_generic_n(tmp_path: Path) -> None:
     """build_program_sprint(N) for N != 3 produces a valid N-file pipeline
@@ -432,20 +414,20 @@ def test_da_17_build_program_sprint_generic_n(tmp_path: Path) -> None:
     vm = ExecutionVM(
         llm=MockLLMAdapter(llm_responses),
         tools={
-            "read_repo_files":            read_repo_files,
-            "read_staged_files":          read_staged_files,
+            "read_repo_files": read_repo_files,
+            "read_staged_files": read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
-            "stage_patch":                stage_patch,
-            "validate_staged_mypy":       lambda paths, **kw: "OK",
-            "commit_patches":             commit_patches,
-            "rollback_patches":           rollback_patches,
-            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
-            "run_mypy":                   lambda paths, **kw: "OK",
-            "run_pytest":                 lambda test_file, **kw: "PASS",
-            "write_repo_files":           write_repo_files,
-            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
-            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
-            "notify_done":                lambda **kw: "DONE",
+            "stage_patch": stage_patch,
+            "validate_staged_mypy": lambda paths, **kw: "OK",
+            "commit_patches": commit_patches,
+            "rollback_patches": rollback_patches,
+            "git_checkout_files": lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy": lambda paths, **kw: "OK",
+            "run_pytest": lambda test_file, **kw: "PASS",
+            "write_repo_files": write_repo_files,
+            "notify_rejected_mypy": lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest": lambda **kw: "REJECTED_PYTEST",
+            "notify_done": lambda **kw: "DONE",
         },
     )
 
@@ -464,10 +446,10 @@ def test_da_17_build_program_sprint_generic_n(tmp_path: Path) -> None:
     program = Program.from_dict(program_dict)
     resolved = [str(p) for p in target_paths]
     context: dict[str, str] = {
-        "sprint_spec":  "rename FSM field across 4 domain modules",
+        "sprint_spec": "rename FSM field across 4 domain modules",
         "target_files": json.dumps(resolved),
-        "test_file":    str(test_f),
-        "repo_path":    str(tmp_path),
+        "test_file": str(test_f),
+        "repo_path": str(tmp_path),
     }
     for i, path in enumerate(resolved):
         context[f"file_{i}_paths"] = json.dumps([path])
@@ -489,6 +471,7 @@ def test_da_18_build_program_sprint_rejects_zero_files() -> None:
 # ---------------------------------------------------------------------------
 # New-file creation tests (post-2026-06-20 refactor) — DA-19, DA-20, DA-21
 # ---------------------------------------------------------------------------
+
 
 def test_da_19_build_program_sprint_new_file_has_no_read_step() -> None:
     """A file flagged is_new=True must not get a read_{i} step — there is
@@ -528,32 +511,28 @@ def test_da_20_new_file_sprint_e2e(tmp_path: Path) -> None:
     test_f.parent.mkdir(parents=True, exist_ok=True)
     test_f.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
 
-    new_file_content = (
-        "from __future__ import annotations\n\n"
-        "class InventoryFSM:\n"
-        "    pass\n"
-    )
+    new_file_content = "from __future__ import annotations\n\nclass InventoryFSM:\n    pass\n"
     test_json = json.dumps({str(test_f): "def test_ok():\n    assert True\n"})
     llm_responses = [new_file_content, test_json]
 
     vm = ExecutionVM(
         llm=MockLLMAdapter(llm_responses),
         tools={
-            "read_repo_files":            read_repo_files,
-            "read_staged_files":          read_staged_files,
+            "read_repo_files": read_repo_files,
+            "read_staged_files": read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
-            "stage_patch":                stage_patch,
-            "stage_new_file":             stage_new_file,
-            "validate_staged_mypy":       lambda paths, **kw: "OK",
-            "commit_patches":             commit_patches,
-            "rollback_patches":           rollback_patches,
-            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
-            "run_mypy":                   lambda paths, **kw: "OK",
-            "run_pytest":                 lambda test_file, **kw: "PASS",
-            "write_repo_files":           write_repo_files,
-            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
-            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
-            "notify_done":                lambda **kw: "DONE",
+            "stage_patch": stage_patch,
+            "stage_new_file": stage_new_file,
+            "validate_staged_mypy": lambda paths, **kw: "OK",
+            "commit_patches": commit_patches,
+            "rollback_patches": rollback_patches,
+            "git_checkout_files": lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy": lambda paths, **kw: "OK",
+            "run_pytest": lambda test_file, **kw: "PASS",
+            "write_repo_files": write_repo_files,
+            "notify_rejected_mypy": lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest": lambda **kw: "REJECTED_PYTEST",
+            "notify_done": lambda **kw: "DONE",
         },
     )
 
@@ -561,11 +540,11 @@ def test_da_20_new_file_sprint_e2e(tmp_path: Path) -> None:
     program = Program.from_dict(program_dict)
 
     context: dict[str, str] = {
-        "sprint_spec":  "create InventoryFSM (AVAILABLE→LOW_STOCK→CRITICAL→OUT_OF_STOCK)",
+        "sprint_spec": "create InventoryFSM (AVAILABLE→LOW_STOCK→CRITICAL→OUT_OF_STOCK)",
         "target_files": json.dumps([str(target)]),
-        "test_file":    str(test_f),
-        "repo_path":    str(tmp_path),
-        "file_0_file":  str(target),
+        "test_file": str(test_f),
+        "repo_path": str(tmp_path),
+        "file_0_file": str(target),
         # deliberately NO file_0_paths — new files never read from disk
     }
 
@@ -604,21 +583,21 @@ def test_da_21_mixed_existing_and_new_file_sprint_e2e(tmp_path: Path) -> None:
     vm = ExecutionVM(
         llm=MockLLMAdapter(llm_responses),
         tools={
-            "read_repo_files":            read_repo_files,
-            "read_staged_files":          read_staged_files,
+            "read_repo_files": read_repo_files,
+            "read_staged_files": read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
-            "stage_patch":                stage_patch,
-            "stage_new_file":             stage_new_file,
-            "validate_staged_mypy":       lambda paths, **kw: "OK",
-            "commit_patches":             commit_patches,
-            "rollback_patches":           rollback_patches,
-            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
-            "run_mypy":                   lambda paths, **kw: "OK",
-            "run_pytest":                 lambda test_file, **kw: "PASS",
-            "write_repo_files":           write_repo_files,
-            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
-            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
-            "notify_done":                lambda **kw: "DONE",
+            "stage_patch": stage_patch,
+            "stage_new_file": stage_new_file,
+            "validate_staged_mypy": lambda paths, **kw: "OK",
+            "commit_patches": commit_patches,
+            "rollback_patches": rollback_patches,
+            "git_checkout_files": lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy": lambda paths, **kw: "OK",
+            "run_pytest": lambda test_file, **kw: "PASS",
+            "write_repo_files": write_repo_files,
+            "notify_rejected_mypy": lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest": lambda **kw: "REJECTED_PYTEST",
+            "notify_done": lambda **kw: "DONE",
         },
     )
 
@@ -627,13 +606,13 @@ def test_da_21_mixed_existing_and_new_file_sprint_e2e(tmp_path: Path) -> None:
 
     resolved = [str(existing), str(new_file)]
     context: dict[str, str] = {
-        "sprint_spec":  "patch orders FSM + create inventory FSM",
+        "sprint_spec": "patch orders FSM + create inventory FSM",
         "target_files": json.dumps(resolved),
-        "test_file":    str(test_f),
-        "repo_path":    str(tmp_path),
-        "file_0_file":  str(existing),
+        "test_file": str(test_f),
+        "repo_path": str(tmp_path),
+        "file_0_file": str(existing),
         "file_0_paths": json.dumps([str(existing)]),
-        "file_1_file":  str(new_file),
+        "file_1_file": str(new_file),
         # no file_1_paths — file_1 is new, never read from disk
     }
 
@@ -641,7 +620,7 @@ def test_da_21_mixed_existing_and_new_file_sprint_e2e(tmp_path: Path) -> None:
 
     assert trace.status == TraceStatus.SUCCESS
     step_ids = [s.step_id for s in trace.steps]
-    assert "read_0" in step_ids   # existing file was read
+    assert "read_0" in step_ids  # existing file was read
     assert "read_1" not in step_ids  # new file was never read
     assert "patch_0" in step_ids
     assert "patch_1" in step_ids
@@ -650,6 +629,7 @@ def test_da_21_mixed_existing_and_new_file_sprint_e2e(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # reference_files tests (post-2026-06-21 refactor) — DA-28..31
 # ---------------------------------------------------------------------------
+
 
 def test_da_28_build_program_sprint_no_references_unchanged() -> None:
     """Without reference_files, no read_references step appears and prompts
@@ -723,8 +703,7 @@ def test_da_31_reference_files_e2e_inventory_fsm_sprint(tmp_path: Path) -> None:
     test_f.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
 
     new_file_content = (
-        "from app.fsm.core.base import BaseFSM\n\n"
-        "class InventoryFSM(BaseFSM):\n    pass\n"
+        "from app.fsm.core.base import BaseFSM\n\nclass InventoryFSM(BaseFSM):\n    pass\n"
     )
     test_json = json.dumps({str(test_f): "def test_ok():\n    assert True\n"})
     llm_responses = [new_file_content, test_json]
@@ -732,33 +711,31 @@ def test_da_31_reference_files_e2e_inventory_fsm_sprint(tmp_path: Path) -> None:
     vm = ExecutionVM(
         llm=MockLLMAdapter(llm_responses),
         tools={
-            "read_repo_files":            read_repo_files,
-            "read_staged_files":          read_staged_files,
+            "read_repo_files": read_repo_files,
+            "read_staged_files": read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
-            "stage_patch":                stage_patch,
-            "stage_new_file":             stage_new_file,
-            "validate_staged_mypy":       lambda paths, **kw: "OK",
-            "commit_patches":             commit_patches,
-            "rollback_patches":           rollback_patches,
-            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
-            "run_mypy":                   lambda paths, **kw: "OK",
-            "run_pytest":                 lambda test_file, **kw: "PASS",
-            "write_repo_files":           write_repo_files,
-            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
-            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
-            "notify_done":                lambda **kw: "DONE",
+            "stage_patch": stage_patch,
+            "stage_new_file": stage_new_file,
+            "validate_staged_mypy": lambda paths, **kw: "OK",
+            "commit_patches": commit_patches,
+            "rollback_patches": rollback_patches,
+            "git_checkout_files": lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy": lambda paths, **kw: "OK",
+            "run_pytest": lambda test_file, **kw: "PASS",
+            "write_repo_files": write_repo_files,
+            "notify_rejected_mypy": lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest": lambda **kw: "REJECTED_PYTEST",
+            "notify_done": lambda **kw: "DONE",
         },
     )
 
-    program = Program.from_dict(
-        build_program_sprint([True], reference_files=[str(base_fsm)])
-    )
+    program = Program.from_dict(build_program_sprint([True], reference_files=[str(base_fsm)]))
     context: dict[str, str] = {
-        "sprint_spec":     "create InventoryFSM following BaseFSM pattern",
-        "target_files":    json.dumps([str(new_file)]),
-        "test_file":       str(test_f),
-        "repo_path":       str(tmp_path),
-        "file_0_file":     str(new_file),
+        "sprint_spec": "create InventoryFSM following BaseFSM pattern",
+        "target_files": json.dumps([str(new_file)]),
+        "test_file": str(test_f),
+        "repo_path": str(tmp_path),
+        "file_0_file": str(new_file),
         "reference_paths": json.dumps([str(base_fsm)]),
     }
 
@@ -775,6 +752,7 @@ def test_da_31_reference_files_e2e_inventory_fsm_sprint(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # read_staged_files / generate_test context tests — DA-32..34
 # ---------------------------------------------------------------------------
+
 
 def test_da_32_build_program_sprint_inserts_read_staged_before_test() -> None:
     """read_staged must run after the last file's stage step and before
@@ -860,31 +838,31 @@ def test_da_35_generate_test_e2e_sees_real_staged_signature(tmp_path: Path) -> N
     vm = ExecutionVM(
         llm=adapter,
         tools={
-            "read_repo_files":            read_repo_files,
-            "read_staged_files":          read_staged_files,
+            "read_repo_files": read_repo_files,
+            "read_staged_files": read_staged_files,
             "apply_search_replace_patch": apply_search_replace_patch,
-            "stage_patch":                stage_patch,
-            "stage_new_file":             stage_new_file,
-            "validate_staged_mypy":       lambda paths, **kw: "OK",
-            "commit_patches":             commit_patches,
-            "rollback_patches":           rollback_patches,
-            "git_checkout_files":         lambda paths, **kw: f"RESTORED: {paths}",
-            "run_mypy":                   lambda paths, **kw: "OK",
-            "run_pytest":                 lambda test_file, **kw: "PASS",
-            "write_repo_files":           write_repo_files,
-            "notify_rejected_mypy":       lambda **kw: "REJECTED_MYPY",
-            "notify_rejected_pytest":     lambda **kw: "REJECTED_PYTEST",
-            "notify_done":                lambda **kw: "DONE",
+            "stage_patch": stage_patch,
+            "stage_new_file": stage_new_file,
+            "validate_staged_mypy": lambda paths, **kw: "OK",
+            "commit_patches": commit_patches,
+            "rollback_patches": rollback_patches,
+            "git_checkout_files": lambda paths, **kw: f"RESTORED: {paths}",
+            "run_mypy": lambda paths, **kw: "OK",
+            "run_pytest": lambda test_file, **kw: "PASS",
+            "write_repo_files": write_repo_files,
+            "notify_rejected_mypy": lambda **kw: "REJECTED_MYPY",
+            "notify_rejected_pytest": lambda **kw: "REJECTED_PYTEST",
+            "notify_done": lambda **kw: "DONE",
         },
     )
 
     program = Program.from_dict(build_program_sprint([True]))
     context: dict[str, str] = {
-        "sprint_spec":  "create InventoryFSM",
+        "sprint_spec": "create InventoryFSM",
         "target_files": json.dumps([str(new_file)]),
-        "test_file":    str(test_f),
-        "repo_path":    str(tmp_path),
-        "file_0_file":  str(new_file),
+        "test_file": str(test_f),
+        "repo_path": str(tmp_path),
+        "file_0_file": str(new_file),
     }
 
     trace = asyncio.run(vm.run(program, context=context))
@@ -900,6 +878,7 @@ def test_da_35_generate_test_e2e_sees_real_staged_signature(tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 # generate_test fixes (post-2026-06-22) — DA-36..38
 # ---------------------------------------------------------------------------
+
 
 def test_da_36_generate_test_has_retry_configured() -> None:
     """generate_test must retry on malformed LLM output — write_test's input
@@ -922,9 +901,9 @@ def test_da_37_generate_test_includes_reference_section_when_present() -> None:
     e.g. models.py contents it didn't generate itself, and may try to
     'go look' instead of writing the test with best-effort information."""
     program_dict = build_program_sprint([True], reference_files=["app/domains/orders/models.py"])
-    generate_test_prompt = next(
-        s for s in program_dict["steps"] if s["id"] == "generate_test"
-    )["prompt"]
+    generate_test_prompt = next(s for s in program_dict["steps"] if s["id"] == "generate_test")[
+        "prompt"
+    ]
 
     assert "$read_references.output" in generate_test_prompt
     assert "Reference files" in generate_test_prompt
@@ -936,9 +915,9 @@ def test_da_38_generate_test_forbids_tool_call_syntax() -> None:
     the direct fix for the observed failure mode (model emitting a fake
     tool_call instead of the requested JSON)."""
     program_dict = build_program_sprint(2)  # no references this time
-    generate_test_prompt = next(
-        s for s in program_dict["steps"] if s["id"] == "generate_test"
-    )["prompt"]
+    generate_test_prompt = next(s for s in program_dict["steps"] if s["id"] == "generate_test")[
+        "prompt"
+    ]
 
     assert "tool_call" in generate_test_prompt
     assert "NO tools" in generate_test_prompt

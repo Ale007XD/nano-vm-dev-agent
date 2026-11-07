@@ -91,8 +91,7 @@ def _resolve_provider() -> tuple[str, dict[str, Any]]:
     if explicit:
         if explicit not in _PROVIDER_DEFAULTS:
             raise RuntimeError(
-                f"Unknown NANO_VM_AGENT_PROVIDER={explicit!r}. "
-                f"Valid: {list(_PROVIDER_DEFAULTS)}"
+                f"Unknown NANO_VM_AGENT_PROVIDER={explicit!r}. Valid: {list(_PROVIDER_DEFAULTS)}"
             )
         cfg = _PROVIDER_DEFAULTS[explicit]
         key = os.environ.get(cfg["api_key_env"], "")
@@ -131,11 +130,7 @@ def build_adapter(
     provider_name, cfg = _resolve_provider()
 
     # Model resolution: explicit arg > env var > provider default
-    model = (
-        llm_model
-        or os.environ.get("NANO_VM_AGENT_MODEL", "")
-        or cfg["model"]
-    )
+    model = llm_model or os.environ.get("NANO_VM_AGENT_MODEL", "") or cfg["model"]
 
     api_key = os.environ.get(cfg["api_key_env"], "")
     api_base: str | None = cfg["api_base"]
@@ -163,9 +158,7 @@ def build_adapter(
     # correctly, instead of disabling streaming.
     wants_stream = bool(kwargs.pop("stream", False))
     if wants_stream:
-        adapter: LLMAdapter = cast(
-            LLMAdapter, StreamingLiteLLMAdapter(model, **kwargs)
-        )
+        adapter: LLMAdapter = cast(LLMAdapter, StreamingLiteLLMAdapter(model, **kwargs))
     else:
         adapter = cast(LLMAdapter, LiteLLMAdapter(model, **kwargs))
 
@@ -210,30 +203,27 @@ async def run_sprint(
     print(f"[runner] provider={provider_name}")
 
     tools: dict[str, Callable[..., Any]] = {
-        "read_repo_files":            read_repo_files,
-        "read_staged_files":          read_staged_files,
+        "read_repo_files": read_repo_files,
+        "read_staged_files": read_staged_files,
         "apply_search_replace_patch": apply_search_replace_patch,
-        "stage_patch":                stage_patch,
-        "stage_new_file":             stage_new_file,
-        "validate_staged_mypy":       validate_staged_mypy,
-        "commit_patches":             commit_patches,
-        "rollback_patches":           rollback_patches,
-        "git_checkout_files":         git_checkout_files,
-        "run_mypy":                   run_mypy,
-        "run_pytest":                 run_pytest,
-        "write_repo_files":           write_repo_files,
-        "notify_rejected_mypy":       notify_rejected_mypy,
-        "notify_rejected_pytest":     notify_rejected_pytest,
-        "notify_done":                notify_done,
+        "stage_patch": stage_patch,
+        "stage_new_file": stage_new_file,
+        "validate_staged_mypy": validate_staged_mypy,
+        "commit_patches": commit_patches,
+        "rollback_patches": rollback_patches,
+        "git_checkout_files": git_checkout_files,
+        "run_mypy": run_mypy,
+        "run_pytest": run_pytest,
+        "write_repo_files": write_repo_files,
+        "notify_rejected_mypy": notify_rejected_mypy,
+        "notify_rejected_pytest": notify_rejected_pytest,
+        "notify_done": notify_done,
     }
 
     vm = ExecutionVM(llm=adapter, tools=tools)
 
     abs_repo = os.path.abspath(repo_path)
-    resolved = [
-        p if os.path.isabs(p) else os.path.join(abs_repo, p)
-        for p in target_files
-    ]
+    resolved = [p if os.path.isabs(p) else os.path.join(abs_repo, p) for p in target_files]
     test_file_resolved = (
         test_file if os.path.isabs(test_file) else os.path.join(abs_repo, test_file)
     )
@@ -250,8 +240,7 @@ async def run_sprint(
         )
 
     resolved_refs = [
-        p if os.path.isabs(p) else os.path.join(abs_repo, p)
-        for p in (reference_files or [])
+        p if os.path.isabs(p) else os.path.join(abs_repo, p) for p in (reference_files or [])
     ]
     if resolved_refs:
         print(f"[runner] reference files (read-only context): {resolved_refs}")
@@ -259,10 +248,10 @@ async def run_sprint(
     program = Program.from_dict(build_program_sprint(is_new_flags, resolved_refs))
 
     context: dict[str, str] = {
-        "sprint_spec":  sprint_spec,
+        "sprint_spec": sprint_spec,
         "target_files": json.dumps(resolved),
-        "test_file":    test_file_resolved,
-        "repo_path":    abs_repo,
+        "test_file": test_file_resolved,
+        "repo_path": abs_repo,
     }
     if resolved_refs:
         context["reference_paths"] = json.dumps(resolved_refs)

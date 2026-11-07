@@ -26,7 +26,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Vibecode provider — ДО любых импортов litellm/nano_vm
 # ---------------------------------------------------------------------------
-_VIBECODE_BASE  = "https://api.vibecode-claude.online/v1"
+_VIBECODE_BASE = "https://api.vibecode-claude.online/v1"
 _VIBECODE_MODEL = "openai/claude-sonnet-4.6"
 
 _api_key = os.environ.get("VIBECODE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -34,7 +34,7 @@ if not _api_key:
     print("ERROR: set VIBECODE_API_KEY (export VIBECODE_API_KEY=sk-...)")
     sys.exit(1)
 
-os.environ["OPENAI_API_KEY"]  = _api_key
+os.environ["OPENAI_API_KEY"] = _api_key
 os.environ["OPENAI_API_BASE"] = _VIBECODE_BASE
 
 # ---------------------------------------------------------------------------

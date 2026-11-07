@@ -89,9 +89,7 @@ def _print_and_save_trace(sprint_name: str, trace: Trace) -> None:
     print("=" * 80)
 
     for idx, step in enumerate(trace.steps, start=1):
-        status = (
-            step.status.name if hasattr(step.status, "name") else str(step.status)
-        )
+        status = step.status.name if hasattr(step.status, "name") else str(step.status)
         print(f"\n[{idx}] {step.step_id}")
         print(f"    status      : {status}")
         print(f"    duration_ms : {step.duration_ms}")
@@ -111,9 +109,7 @@ def _print_and_save_trace(sprint_name: str, trace: Trace) -> None:
         "steps": [
             {
                 "step_id": s.step_id,
-                "status": (
-                    s.status.name if hasattr(s.status, "name") else str(s.status)
-                ),
+                "status": (s.status.name if hasattr(s.status, "name") else str(s.status)),
                 "duration_ms": s.duration_ms,
                 "output": str(getattr(s, "output", "")),
                 "error": str(getattr(s, "error", "")),

@@ -154,6 +154,7 @@ def _apply_sr_blocks(content: str, clean_patch: str, label: str) -> str:
 # read_repo_files
 # ---------------------------------------------------------------------------
 
+
 def read_repo_files(paths: str, **kwargs: Any) -> str:
     """Read source files from the repository.
 
@@ -184,6 +185,7 @@ def read_repo_files(paths: str, **kwargs: Any) -> str:
 # apply_search_replace_patch  (direct write — kept for backward compat)
 # ---------------------------------------------------------------------------
 
+
 def apply_search_replace_patch(file_path: str, patch_text: str, **kwargs: Any) -> str:
     """Apply a Search&Replace patch directly to a file on disk (immediate write)."""
     import os
@@ -209,6 +211,7 @@ def apply_search_replace_patch(file_path: str, patch_text: str, **kwargs: Any) -
 # ---------------------------------------------------------------------------
 # stage_patch
 # ---------------------------------------------------------------------------
+
 
 def stage_patch(file_path: str, patch_text: str, **kwargs: Any) -> str:
     """Apply S&R patch in-memory; buffer result without writing to disk.
@@ -251,6 +254,7 @@ def stage_patch(file_path: str, patch_text: str, **kwargs: Any) -> str:
 # stage_new_file — for target files that do not exist on disk yet
 # ---------------------------------------------------------------------------
 
+
 def stage_new_file(file_path: str, content: str, **kwargs: Any) -> str:
     """Buffer the full content of a brand-new file (no diffing).
 
@@ -291,6 +295,7 @@ def stage_new_file(file_path: str, content: str, **kwargs: Any) -> str:
 # but BEFORE commit (e.g. generate_test)
 # ---------------------------------------------------------------------------
 
+
 def read_staged_files(paths: str, **kwargs: Any) -> str:
     """Read target files as they will look after commit — from _patch_buffer
     if staged this sprint, falling back to disk otherwise (file untouched,
@@ -317,9 +322,7 @@ def read_staged_files(paths: str, **kwargs: Any) -> str:
     try:
         path_list: list[str] = json.loads(paths)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"read_staged_files: paths must be JSON list, got: {paths!r}"
-        ) from exc
+        raise ValueError(f"read_staged_files: paths must be JSON list, got: {paths!r}") from exc
 
     repo_path: str = kwargs.get("repo_path", "") or ""
     blocks: list[str] = []
@@ -341,6 +344,7 @@ def read_staged_files(paths: str, **kwargs: Any) -> str:
 # ---------------------------------------------------------------------------
 # validate_staged_mypy
 # ---------------------------------------------------------------------------
+
 
 def validate_staged_mypy(paths: str, **kwargs: Any) -> str:
     """Run mypy --strict against staged buffer content without touching disk.
@@ -365,9 +369,7 @@ def validate_staged_mypy(paths: str, **kwargs: Any) -> str:
     try:
         path_list: list[str] = json.loads(paths)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"validate_staged_mypy: paths must be JSON list, got: {paths!r}"
-        ) from exc
+        raise ValueError(f"validate_staged_mypy: paths must be JSON list, got: {paths!r}") from exc
 
     with tempfile.TemporaryDirectory(prefix="nano_vm_mypy_") as tmpdir:
         # 1. Copy entire repo into tmpdir so imports resolve correctly
@@ -419,6 +421,7 @@ def validate_staged_mypy(paths: str, **kwargs: Any) -> str:
 # commit_patches
 # ---------------------------------------------------------------------------
 
+
 def commit_patches(**kwargs: Any) -> str:
     """Flush _patch_buffer to disk atomically, then clear buffer.
 
@@ -451,6 +454,7 @@ def commit_patches(**kwargs: Any) -> str:
 # rollback_patches
 # ---------------------------------------------------------------------------
 
+
 def rollback_patches(**kwargs: Any) -> str:
     """Clear _patch_buffer without writing anything to disk.
 
@@ -472,6 +476,7 @@ def rollback_patches(**kwargs: Any) -> str:
 # ---------------------------------------------------------------------------
 # git_checkout_files  (safety net for pytest-fail post-commit)
 # ---------------------------------------------------------------------------
+
 
 def git_checkout_files(paths: str, **kwargs: Any) -> str:
     """Restore files to their pre-patch state after a post-commit pytest failure.
@@ -498,9 +503,7 @@ def git_checkout_files(paths: str, **kwargs: Any) -> str:
     try:
         path_list: list[str] = json.loads(paths)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"git_checkout_files: paths must be JSON list, got: {paths!r}"
-        ) from exc
+        raise ValueError(f"git_checkout_files: paths must be JSON list, got: {paths!r}") from exc
 
     repo_path: str = kwargs.get("repo_path", "") or ""
     cwd = repo_path if repo_path and os.path.isdir(repo_path) else None
@@ -527,8 +530,7 @@ def git_checkout_files(paths: str, **kwargs: Any) -> str:
         )
         if result.returncode != 0:
             raise RuntimeError(
-                f"git_checkout_files: exit {result.returncode}:\n"
-                f"{result.stderr or result.stdout}"
+                f"git_checkout_files: exit {result.returncode}:\n{result.stderr or result.stdout}"
             )
         print(f"[GIT] restored (tracked) {tracked}", file=sys.stderr)
 
@@ -549,6 +551,7 @@ def git_checkout_files(paths: str, **kwargs: Any) -> str:
 # ---------------------------------------------------------------------------
 # run_mypy  (direct — runs against disk; use validate_staged_mypy pre-commit)
 # ---------------------------------------------------------------------------
+
 
 def run_mypy(paths: str, **kwargs: Any) -> str:
     """Run mypy --strict on given paths (disk).
@@ -576,6 +579,7 @@ def run_mypy(paths: str, **kwargs: Any) -> str:
 # run_pytest
 # ---------------------------------------------------------------------------
 
+
 def run_pytest(test_file: str, **kwargs: Any) -> str:
     """Run pytest on a single test file.
 
@@ -602,6 +606,7 @@ def run_pytest(test_file: str, **kwargs: Any) -> str:
 # ---------------------------------------------------------------------------
 # write_repo_files
 # ---------------------------------------------------------------------------
+
 
 def write_repo_files(files_json: str, **kwargs: Any) -> str:
     """Write files to disk from JSON dict {path: content}.
@@ -654,6 +659,7 @@ def write_repo_files(files_json: str, **kwargs: Any) -> str:
 # ---------------------------------------------------------------------------
 # notify helpers (terminal leaf steps)
 # ---------------------------------------------------------------------------
+
 
 def notify_rejected_mypy(**kwargs: Any) -> str:
     print("REJECTED: mypy failed — patch rolled back")

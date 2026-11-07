@@ -139,7 +139,8 @@ Environment setup (must precede all litellm/nano_vm imports):
 
 ```python
 import os
-os.environ["OPENAI_API_KEY"]  = "<vibecode_key>"
+
+os.environ["OPENAI_API_KEY"] = "<vibecode_key>"
 os.environ["OPENAI_API_BASE"] = "https://api.vibecode-claude.online/v1"
 ```
 

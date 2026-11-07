@@ -27,6 +27,7 @@ async def test_run_sprint_clears_fingerprints() -> None:
         mock_vm_cls.return_value = mock_vm
 
         from agent.runner import run_sprint
+
         await run_sprint(
             sprint_spec="test",
             target_files=["agent/tools.py"],
