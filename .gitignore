@@ -67,3 +67,6 @@ coverage.xml
 
 # Контекст
 context/
+
+# Патчи
+patches/
